@@ -1,0 +1,16 @@
+SET(SOURCES ui_HomeScn.c
+    ui_MenuScn.c
+    ui_WifiScn.c
+    ui.c
+    ui_comp_hook.c
+    ui_helpers.c
+    ui_img_star_png.c
+    ui_img_up_triangle_png.c
+    ui_img_battery_png.c
+    ui_img_brightness_png.c
+    fonts/ui_font_inter16sb.c
+    fonts/ui_font_inter20b.c
+    fonts/ui_font_inter20sb.c
+    fonts/ui_font_inter32sb.c)
+
+add_library(ui ${SOURCES})
