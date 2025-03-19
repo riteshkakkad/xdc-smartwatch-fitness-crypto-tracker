@@ -66,15 +66,35 @@ extern lv_obj_t * ui_backBtn;
 extern lv_obj_t * ui_Label3;
 // CUSTOM VARIABLES
 
+
+// add Queue
+/*
+struct timeQueue {
+    int hour;
+    int minute;
+    int day;
+    int month;
+    int weekday;
+    int ampm;
+    bool configureOnDemand;
+    int command; // 0 - update date/time, 1 - change screen, 
+                    2 - update on demand, 3 - wifi not connected
+                    4 - connect to exsisting wifi, 5 - connected to wifi
+    int screen; home = 1, menu = 2, wifi = 3
+  };
+  
+*/
+
 // SCREEN: ui_WifiScn
 void ui_WifiScn_screen_init(void);
 extern lv_obj_t * ui_WifiScn;
-extern lv_obj_t * qr;
-extern const char * qrData ;
 extern lv_obj_t * ui_wifiTimerArc;
 extern lv_obj_t * ui_backBtn2;
 extern lv_obj_t * ui_Label5;
+extern lv_obj_t * ui_Label4;
 void ui_event_backBtn2(lv_event_t * e);
+extern bool setOndemardWifi;
+extern lv_timer_t * arcTimer;
 // CUSTOM VARIABLES
 
 // EVENTS

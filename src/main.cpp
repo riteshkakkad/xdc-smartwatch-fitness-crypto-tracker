@@ -1,8 +1,12 @@
 #include <Arduino.h>
+#include <WiFi.h>
+#include <FS.h>
 #include <lvgl.h>
 #include <CST816S.h>
 #include <ui/ui.h>
 #include <TFT_eSPI.h>
+#include <WiFiManager.h>
+#include "time.h"
 
 #define TFT_MISO -1
 // #define TFT_MISO 12
@@ -18,17 +22,25 @@
 #define TOUCH_RST 13
 #define TOUCH_IRQ 5
 
+#define LVGL_TICK_PERIOD_MS 5
+
 static const uint16_t screenWidth  = 240;
 static const uint16_t screenHeight = 240;
 
-#define SCREEN_BUFFER_SIZE (240 * 240 * 2)  
-enum { SCREENBUFFER_SIZE_PIXELS = screenWidth * screenHeight / 2 };
+#define SCREEN_BUFFER_SIZE (240 * 240)  
+enum { SCREENBUFFER_SIZE_PIXELS = screenWidth * screenHeight /2 };
 static lv_color_t buf [SCREENBUFFER_SIZE_PIXELS];
 
 TFT_eSPI tft = TFT_eSPI(screenWidth, screenHeight);
 // Arduino_DataBus *bus = new Arduino_HWSPI( TFT_DC, TFT_CS, TFT_SCLK, TFT_MOSI, TFT_MISO );
 // Arduino_GFX *gfx = new Arduino_GC9A01(bus, TFT_RST /* RST */);
 CST816S touch(6, 7,13,5);	// sda, scl, rst, irq
+WiFiManager wm;
+struct tm timeinfo;
+
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 19800;
+const int   daylightOffset_sec = 1;
 
 uint8_t current_screent = 1;
 
@@ -41,11 +53,32 @@ void my_print(lv_log_level_t level, const char * buf)
 }
 #endif
 
+// add Queue
+struct timeQueue {
+  int hour;
+  int minute;
+  int day;
+  int month;
+  int weekday;
+  int ampm;
+  bool configureOnDemand;
+  int command; // 0 - update date/time, 1 - change screen, 2 - update on demand, 3 - wifi not connected
+  int screen;
+  lv_screen_load_anim_t moveDir;
+  lv_color_t color;
+  char* text;
+};
+
+QueueHandle_t commandQueue;
+QueueHandle_t onDemandQueue;
+
 void* allocate_psram(size_t size);
 void my_disp_flush (lv_display_t *disp, const lv_area_t *area, uint8_t *pixelmap);
 static uint32_t my_tick_get_cb (void);
 void GUITask(void *pvParameters);
 void GUIUpdateTask(void *pvParameters);
+void updateOnDemandArc(lv_timer_t * timer);
+void my_touchpad_read (lv_indev_t * indev_driver, lv_indev_data_t * data);
 
 void setup()
 {
@@ -61,34 +94,19 @@ void setup()
   Serial.print("PSRAM free size: ");
   Serial.println(ESP.getFreePsram());
 
-  // // lv_obj_t *label = lv_label_create( lv_screen_active() );
-  // // lv_label_set_text( label, "Hello Anjana, I'm LVGL!" );
-  // // lv_obj_align( label, LV_ALIGN_CENTER, 0, 0 );
-  // ui_init();
-
-  Serial.println();
-  Serial.println();
-  Serial.println("Setup done");
-  Serial.println();
-  Serial.println();
-  Serial.print("Heap size: ");
-  Serial.println(ESP.getHeapSize());
-  Serial.print("Heap free size: ");
-  Serial.println(ESP.getFreeHeap());
-  Serial.print("PSRAM size: ");
-  Serial.println(ESP.getPsramSize());
-  Serial.print("PSRAM free size: ");
-  Serial.println(ESP.getFreePsram());
+  // initialize the command queue
+  commandQueue = xQueueCreate(10, sizeof(timeQueue));
+  onDemandQueue = xQueueCreate(2, sizeof(int8_t));
 
   // create GUI task runs in code 0 
-  xTaskCreatePinnedToCore(GUITask, "GUITask", 10000, NULL, 3, NULL, 0);
-  xTaskCreatePinnedToCore(GUIUpdateTask, "GUIUpdateTask", 8096, NULL, 2, NULL, 0);
+  xTaskCreatePinnedToCore(GUITask, "GUITask", 18096, NULL, 3, NULL, 0);
+  // delay(500);
+  // xTaskCreatePinnedToCore(GUIUpdateTask, "GUIUpdateTask", 8096, NULL, 3, NULL, 1);
 }
 
 void loop()
 {
-  // lv_timer_handler(); /* let the GUI do its work */
-  delay(1000); /* let this time pass */
+  vTaskDelete(NULL);
 }
 
 /*Set tick routine needed for LVGL internal timings*/
@@ -168,12 +186,12 @@ void GUITask(void *pvParameters){
       lv_log_register_print_cb( my_print ); /* register print function for debugging */
   #endif
 
-  lv_color_t* buf1 = (lv_color_t*)allocate_psram(SCREENBUFFER_SIZE_PIXELS);
-  lv_color_t* buf2 = (lv_color_t*)allocate_psram(SCREENBUFFER_SIZE_PIXELS);
+  // lv_color_t* buf1 = (lv_color_t*)allocate_psram(SCREENBUFFER_SIZE_PIXELS);
+  // lv_color_t* buf2 = (lv_color_t*)allocate_psram(SCREENBUFFER_SIZE_PIXELS);
 
   static lv_disp_t* disp;
   disp = lv_display_create( screenWidth, screenHeight );
-  lv_display_set_buffers( disp, buf1, buf2, SCREENBUFFER_SIZE_PIXELS * sizeof(lv_color_t), LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_buffers( disp, buf, NULL, SCREENBUFFER_SIZE_PIXELS * sizeof(lv_color_t), LV_DISPLAY_RENDER_MODE_PARTIAL);
   lv_display_set_flush_cb( disp, my_disp_flush );
   // lv_display_set_buffers(disp, disp_draw_buf, NULL, bufSize * 2, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
@@ -187,15 +205,221 @@ void GUITask(void *pvParameters){
 
   ui_init();
 
+  Serial.println();
+  Serial.println();
+  Serial.println("Setup done");
+  Serial.println();
+  Serial.println();
+  Serial.print("Heap size: ");
+  Serial.println(ESP.getHeapSize());
+  Serial.print("Heap free size: ");
+  Serial.println(ESP.getFreeHeap());
+  Serial.print("PSRAM size: ");
+  Serial.println(ESP.getPsramSize());
+  Serial.print("PSRAM free size: ");
+  Serial.println(ESP.getFreePsram());
+
+  timeQueue qdata;
+
+  xTaskCreatePinnedToCore(GUIUpdateTask, "GUIUpdateTask", 8096, NULL, 3, NULL, 1);
+
   printf("Setup done\n");
+
+//   const esp_timer_create_args_t lvgl_tick_timer_args = {
+//     .callback = [](void *arg)
+//     {lv_tick_inc(LVGL_TICK_PERIOD_MS);
+//     lv_timer_handler(); },
+//     .name = "lvgl_tick"};
+// esp_timer_handle_t lvgl_tick_timer = nullptr;
+// ESP_ERROR_CHECK(esp_timer_create(&lvgl_tick_timer_args, &lvgl_tick_timer));
+// ESP_ERROR_CHECK(esp_timer_start_periodic(lvgl_tick_timer, LVGL_TICK_PERIOD_MS * 1000));
+
   while(1){
+    if(xQueueReceive(commandQueue, &qdata, 0) == pdTRUE){
+      // update the time, ampmLbl and dateLbl on the screen
+      switch(qdata.command){
+        case 0:
+          char time[10];
+          sprintf(time, "%02d:%02d", qdata.hour, qdata.minute);
+          lv_label_set_text(ui_timeLbl, time);
+          if(qdata.ampm){
+            lv_label_set_text(ui_ampmLbl, "PM");
+          }else{
+            lv_label_set_text(ui_ampmLbl, "AM");
+          }
+    
+          // date - month-date Weekday
+          char dateStr[15];
+          sprintf(dateStr, "%02d-%02d %s", qdata.month, qdata.day, (qdata.weekday == 0) ? "SUN" : (qdata.weekday == 1) ? "MON" : (qdata.weekday == 2) ? "TUE" : (qdata.weekday == 3) ? "WED" : (qdata.weekday == 4) ? "THU" : (qdata.weekday == 5) ? "FRI" : "SAT");
+          lv_label_set_text(ui_dateLbl, dateStr);
+          break;
+        case 1:
+          switch(qdata.screen){
+            case 1:
+              _ui_screen_change(&ui_HomeScn, qdata.moveDir, 500, 0, &ui_HomeScn_screen_init);
+              break;
+            case 2:
+              _ui_screen_change(&ui_MenuScn, qdata.moveDir, 500, 0, &ui_MenuScn_screen_init);
+              break;
+            case 3:
+              _ui_screen_change(&ui_WifiScn, qdata.moveDir, 500, 0, &ui_WifiScn_screen_init);
+              break;
+          }
+          break;
+        case 2:
+          lv_obj_remove_flag(ui_backBtn2, LV_OBJ_FLAG_HIDDEN);
+          lv_obj_remove_flag(ui_wifiTimerArc, LV_OBJ_FLAG_HIDDEN);
+          lv_label_set_text(ui_Label4, "Connect to \n\nCryptoWatch v1.0 WiFi ");
+          lv_obj_set_style_text_color(ui_Label4, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+          lv_arc_set_value(ui_wifiTimerArc, 0);
+          arcTimer = lv_timer_create(updateOnDemandArc, 1000, NULL);
+          // lv_timer_set_auto_delete(arcTimer, true);
+          lv_timer_set_repeat_count(arcTimer, 60);
+          lv_timer_ready(arcTimer);
+          break; 
+        case 4:
+          lv_obj_add_flag(ui_backBtn2, LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(ui_wifiTimerArc, LV_OBJ_FLAG_HIDDEN);
+          break; 
+        case 5:
+          lv_label_set_text(ui_Label4, qdata.text);
+          lv_obj_set_style_text_color(ui_Label4, qdata.color, LV_PART_MAIN | LV_STATE_DEFAULT);
+          break;      
+          
+      }
+    }
+
+    if(setOndemardWifi){
+      // send onDemandQueue 
+      int8_t data = 1;
+      xQueueSend(onDemandQueue, &data, 0);
+    }
     lv_timer_handler(); /* let the GUI do its work */
     delay(5);
   }
 }
 
 void GUIUpdateTask(void *pvParameters){
+  timeQueue qdata;
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+
+  // check if the wifi is connected
+  if (WiFi.status() != WL_CONNECTED) {
+    
+    // change to screen 3
+    qdata.command = 1;
+    qdata.screen = 3;
+    qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
+    xQueueSend(commandQueue, &qdata, 0);
+    qdata.command = 5;
+    qdata.text = "Connect to \n\nCryptoWatch v1.0 WiFi ";
+    qdata.color = lv_color_hex(0xFFFFFF);
+    xQueueSend(commandQueue, &qdata, 0);
+
+    // hide the back button and the arc
+    qdata.command = 4;
+    xQueueSend(commandQueue, &qdata, 0);
+    
+    // wm.resetSettings(); 
+
+    bool res = wm.autoConnect("CryptoWatch v1.0");
+
+    if(res) {
+      Serial.println("connected...yeey :)");
+
+      // change text of ui_Label4 as connected
+      qdata.command = 5;
+      qdata.text = "Connected to WiFi";
+      qdata.color = lv_color_hex(0x00FF55);
+      xQueueSend(commandQueue, &qdata, 0);
+      delay(1000);
+      qdata.command = 5;
+      qdata.text = "Connected to WiFi";
+      qdata.color = lv_color_hex(0xFFFFFF);
+      xQueueSend(commandQueue, &qdata, 0);
+      delay(1000);
+      qdata.command = 5;
+      qdata.text = "Connected to WiFi";
+      qdata.color = lv_color_hex(0x00FF55);
+      xQueueSend(commandQueue, &qdata, 0);
+      delay(1000);
+      
+      // change the screen HomeScn
+      qdata.command = 1;
+      qdata.screen = 1;
+      qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_LEFT;
+      xQueueSend(commandQueue, &qdata, 0);
+      qdata.command = 5;
+      qdata.text = "Connect to \n\nCryptoWatch v1.0 WiFi ";
+      qdata.color = lv_color_hex(0xFFFFFF);
+      xQueueSend(commandQueue, &qdata, 0);
+      delay(1000);
+      
+    } else {
+      Serial.println("not connected... :(");
+
+      // change text of ui_Label4
+      lv_label_set_text(ui_Label4, "Not Connected to WiFi\n Try again in 3");
+      delay(500);
+      lv_label_set_text(ui_Label4, "Not Connected to WiFi\n Try again in 2");
+      delay(500);
+      lv_label_set_text(ui_Label4, "Not Connected to WiFi\n Try again in 1");
+      delay(500);
+
+      // Restart the ESP
+      ESP.restart();
+    }
+    
+  }
+
+  uint8_t onDemandCommand;
+
   while(1){
+    if(xQueueReceive(onDemandQueue, &onDemandCommand, 0) == pdTRUE){
+      // update the time, ampmLbl and dateLbl on the screen
+      if(onDemandCommand == 1){
+        // change the screen to 2
+        qdata.command = 1;
+        qdata.screen = 3;
+        qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_LEFT;
+        xQueueSend(commandQueue, &qdata, 0);
+
+        qdata.command = 2;
+        xQueueSend(commandQueue, &qdata, 0);
+      }
+    }
+    
+    // check if the wifi is connected
+    if (WiFi.status() == WL_CONNECTED) {
+      if(!getLocalTime(&timeinfo)){
+        Serial.println("Failed to obtain time");
+        // continue;
+      }else{
+        Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
+
+        // get hour, minute and date, month and weekday, am/pm seperately        
+        qdata.hour = timeinfo.tm_hour;
+        qdata.minute = timeinfo.tm_min;
+        qdata.day = timeinfo.tm_mday;
+        qdata.month = timeinfo.tm_mon + 1;
+        qdata.weekday = timeinfo.tm_wday;
+        qdata.ampm = qdata.hour >= 12 ? 1 : 0;
+        // hour = hour / 12
+        qdata.command = 0;
+        xQueueSend(commandQueue, &qdata, 0);
+      } 
+    }
     delay(1000);
   }
+}
+
+void updateOnDemandArc(lv_timer_t * timer)
+{
+  // increment the value of the arc by 5
+  // if(setOndemardWifi){
+    lv_arc_set_value(ui_wifiTimerArc, lv_arc_get_value(ui_wifiTimerArc) + 2);
+  // }else{
+  //   lv_arc_set_value(ui_wifiTimerArc, 0);
+
+  // }
 }

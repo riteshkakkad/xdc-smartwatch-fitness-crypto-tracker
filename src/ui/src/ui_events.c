@@ -23,7 +23,8 @@ void brightnessChangecallback(lv_event_t * e)
 
 void addNewWiFicallback(lv_event_t * e)
 {
-	// Your code here
+	// set the flag
+	setOndemardWifi = true;
 }
 
 void backToHomeCB(lv_event_t * e)
@@ -34,5 +35,6 @@ void backToHomeCB(lv_event_t * e)
 
 void cancelWiFiCB(lv_event_t * e)
 {
-	// Your code here
+	setOndemardWifi = false;
+	
 }

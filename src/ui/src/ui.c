@@ -52,11 +52,12 @@ lv_obj_t * ui_Label3;
 // SCREEN: ui_WifiScn
 void ui_WifiScn_screen_init(void);
 lv_obj_t * ui_WifiScn;
-lv_obj_t * qr;
-const char * qrData;
 lv_obj_t * ui_wifiTimerArc;
 lv_obj_t * ui_backBtn2;
 lv_obj_t * ui_Label5;
+lv_obj_t * ui_Label4;
+bool setOndemardWifi = false;
+lv_timer_t * arcTimer;
 // CUSTOM VARIABLES
 
 // EVENTS

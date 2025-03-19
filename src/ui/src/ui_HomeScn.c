@@ -28,7 +28,7 @@ void ui_HomeScn_screen_init(void)
     lv_obj_set_x(ui_timeLbl, -20);
     lv_obj_set_y(ui_timeLbl, -58);
     lv_obj_set_align(ui_timeLbl, LV_ALIGN_CENTER);
-    lv_label_set_text(ui_timeLbl, "04:15");
+    lv_label_set_text(ui_timeLbl, "00:00");
     lv_obj_set_style_text_color(ui_timeLbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_timeLbl, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_letter_space(ui_timeLbl, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -41,7 +41,7 @@ void ui_HomeScn_screen_init(void)
     lv_obj_set_x(ui_ampmLbl, 48);
     lv_obj_set_y(ui_ampmLbl, -55);
     lv_obj_set_align(ui_ampmLbl, LV_ALIGN_CENTER);
-    lv_label_set_text(ui_ampmLbl, "PM");
+    lv_label_set_text(ui_ampmLbl, "XX");
     lv_obj_set_style_text_color(ui_ampmLbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_ampmLbl, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_ampmLbl, &ui_font_inter20sb, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -52,7 +52,7 @@ void ui_HomeScn_screen_init(void)
     lv_obj_set_x(ui_dateLbl, 0);
     lv_obj_set_y(ui_dateLbl, -90);
     lv_obj_set_align(ui_dateLbl, LV_ALIGN_CENTER);
-    lv_label_set_text(ui_dateLbl, "02-27  MON");
+    lv_label_set_text(ui_dateLbl, "00-00  XXX");
     lv_obj_set_style_text_color(ui_dateLbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_dateLbl, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_dateLbl, &ui_font_inter16sb, LV_PART_MAIN | LV_STATE_DEFAULT);
