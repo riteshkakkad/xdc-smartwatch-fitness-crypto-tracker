@@ -52,21 +52,29 @@ extern lv_obj_t * ui_Panel1;
 
 // SCREEN: ui_MenuScn
 void ui_MenuScn_screen_init(void);
-void ui_event_MenuScn(lv_event_t * e);
 extern lv_obj_t * ui_MenuScn;
-extern lv_obj_t * ui_Panel4;
-extern lv_obj_t * ui_Slider1;
 extern lv_obj_t * ui_Image3;
-extern lv_obj_t * ui_Panel6;
-extern lv_obj_t * ui_Label2;
-extern lv_obj_t * ui_Panel3;
+void ui_event_brightnessSlider(lv_event_t * e);
+extern lv_obj_t * ui_brightnessSlider;
 extern lv_obj_t * ui_Label1;
-extern lv_obj_t * ui_Dropdown1;
+void ui_event_addNewWiFibtn(lv_event_t * e);
+extern lv_obj_t * ui_addNewWiFibtn;
+extern lv_obj_t * ui_Label2;
+extern lv_obj_t * ui_Roller1;
+void ui_event_backBtn(lv_event_t * e);
+extern lv_obj_t * ui_backBtn;
+extern lv_obj_t * ui_Label3;
 // CUSTOM VARIABLES
 
 // SCREEN: ui_WifiScn
 void ui_WifiScn_screen_init(void);
 extern lv_obj_t * ui_WifiScn;
+extern lv_obj_t * qr;
+extern const char * qrData ;
+extern lv_obj_t * ui_wifiTimerArc;
+extern lv_obj_t * ui_backBtn2;
+extern lv_obj_t * ui_Label5;
+void ui_event_backBtn2(lv_event_t * e);
 // CUSTOM VARIABLES
 
 // EVENTS

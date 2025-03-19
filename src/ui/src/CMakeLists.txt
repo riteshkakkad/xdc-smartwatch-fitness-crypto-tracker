@@ -4,6 +4,7 @@ SET(SOURCES ui_HomeScn.c
     ui.c
     ui_comp_hook.c
     ui_helpers.c
+    ui_events.c
     ui_img_star_png.c
     ui_img_up_triangle_png.c
     ui_img_battery_png.c

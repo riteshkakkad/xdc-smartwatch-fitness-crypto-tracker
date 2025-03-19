@@ -35,21 +35,28 @@ lv_obj_t * ui_Panel1;
 
 // SCREEN: ui_MenuScn
 void ui_MenuScn_screen_init(void);
-void ui_event_MenuScn(lv_event_t * e);
 lv_obj_t * ui_MenuScn;
-lv_obj_t * ui_Panel4;
-lv_obj_t * ui_Slider1;
 lv_obj_t * ui_Image3;
-lv_obj_t * ui_Panel6;
-lv_obj_t * ui_Label2;
-lv_obj_t * ui_Panel3;
+void ui_event_brightnessSlider(lv_event_t * e);
+lv_obj_t * ui_brightnessSlider;
 lv_obj_t * ui_Label1;
-lv_obj_t * ui_Dropdown1;
+void ui_event_addNewWiFibtn(lv_event_t * e);
+lv_obj_t * ui_addNewWiFibtn;
+lv_obj_t * ui_Label2;
+lv_obj_t * ui_Roller1;
+void ui_event_backBtn(lv_event_t * e);
+lv_obj_t * ui_backBtn;
+lv_obj_t * ui_Label3;
 // CUSTOM VARIABLES
 
 // SCREEN: ui_WifiScn
 void ui_WifiScn_screen_init(void);
 lv_obj_t * ui_WifiScn;
+lv_obj_t * qr;
+const char * qrData;
+lv_obj_t * ui_wifiTimerArc;
+lv_obj_t * ui_backBtn2;
+lv_obj_t * ui_Label5;
 // CUSTOM VARIABLES
 
 // EVENTS
@@ -75,13 +82,41 @@ void ui_event_HomeScn(lv_event_t * e)
     }
 }
 
-void ui_event_MenuScn(lv_event_t * e)
+void ui_event_brightnessSlider(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
 
-    if(event_code == LV_EVENT_GESTURE &&  lv_indev_get_gesture_dir(lv_indev_active()) == LV_DIR_RIGHT) {
-        lv_indev_wait_release(lv_indev_active());
-        _ui_screen_change(&ui_HomeScn, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 0, &ui_HomeScn_screen_init);
+    if(event_code == LV_EVENT_VALUE_CHANGED) {
+        brightnessChangecallback(e);
+    }
+}
+
+void ui_event_addNewWiFibtn(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+
+    if(event_code == LV_EVENT_CLICKED) {
+        addNewWiFicallback(e);
+        _ui_screen_change(&ui_WifiScn, LV_SCR_LOAD_ANIM_MOVE_LEFT, 500, 100, &ui_WifiScn_screen_init);
+    }
+}
+
+void ui_event_backBtn(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+
+    if(event_code == LV_EVENT_CLICKED) {
+        backToHomeCB(e);
+    }
+}
+
+void ui_event_backBtn2(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+
+    if(event_code == LV_EVENT_CLICKED) {
+        cancelWiFiCB(e);
+        _ui_screen_change(&ui_MenuScn, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 100, &ui_MenuScn_screen_init);
     }
 }
 
