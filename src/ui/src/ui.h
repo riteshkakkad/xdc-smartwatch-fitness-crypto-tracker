@@ -80,6 +80,7 @@ struct timeQueue {
     int command; // 0 - update date/time, 1 - change screen, 
                     2 - update on demand, 3 - wifi not connected
                     4 - connect to exsisting wifi, 5 - connected to wifi
+                    6 - play animation, 7 - stop animation
     int screen; home = 1, menu = 2, wifi = 3
   };
   

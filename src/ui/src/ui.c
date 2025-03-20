@@ -58,6 +58,7 @@ lv_obj_t * ui_Label5;
 lv_obj_t * ui_Label4;
 bool setOndemardWifi = false;
 lv_timer_t * arcTimer;
+
 // CUSTOM VARIABLES
 
 // EVENTS
@@ -117,7 +118,7 @@ void ui_event_backBtn2(lv_event_t * e)
 
     if(event_code == LV_EVENT_CLICKED) {
         cancelWiFiCB(e);
-        _ui_screen_change(&ui_MenuScn, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 100, &ui_MenuScn_screen_init);
+        // _ui_screen_change(&ui_MenuScn, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 100, &ui_MenuScn_screen_init);
     }
 }
 

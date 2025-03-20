@@ -7,6 +7,8 @@
 #include <TFT_eSPI.h>
 #include <WiFiManager.h>
 #include "time.h"
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
 #define TFT_MISO -1
 // #define TFT_MISO 12
@@ -37,6 +39,8 @@ TFT_eSPI tft = TFT_eSPI(screenWidth, screenHeight);
 CST816S touch(6, 7,13,5);	// sda, scl, rst, irq
 WiFiManager wm;
 struct tm timeinfo;
+// WiFiUDP ntpUDP;
+// NTPClient timeClient(ntpUDP);
 
 const char* ntpServer = "pool.ntp.org";
 const long  gmtOffset_sec = 19800;
@@ -53,20 +57,42 @@ void my_print(lv_log_level_t level, const char * buf)
 }
 #endif
 
-// add Queue
-struct timeQueue {
-  int hour;
-  int minute;
-  int day;
-  int month;
-  int weekday;
-  int ampm;
-  bool configureOnDemand;
-  int command; // 0 - update date/time, 1 - change screen, 2 - update on demand, 3 - wifi not connected
-  int screen;
-  lv_screen_load_anim_t moveDir;
-  lv_color_t color;
+struct homeScreenCommand{
+  uint8_t command; // 0 - time/date
+  uint8_t hour;
+  uint8_t minute;
+  uint8_t day;
+  uint8_t month;
+  uint8_t weekday;
+  uint8_t ampm;
+};
+
+struct menuScreenCommand{
+  uint8_t command; 
+  uint8_t temp;
+};  
+
+struct wifiScreenCommand{
+  uint8_t command; // 0 - text, 1 - arc, 2 - back button
   char* text;
+  lv_color_t textColor;
+  bool hideCancelBtn;
+  uint8_t arcValue;
+  lv_color_t arcColor;
+};
+
+struct guiCommandQueue {
+  uint8_t command; // 0 - screen change, 1 - home screen, 2 - menu screen, 3 - wifi screen , 4 - onDemand
+  homeScreenCommand homeScreen;
+  menuScreenCommand menuScreen;
+  wifiScreenCommand wifiScreen;
+  lv_screen_load_anim_t moveDir;
+  uint8_t screen;
+  uint8_t setOndemardWifi;
+};
+
+struct onDemandCommand{
+  uint8_t command;
 };
 
 QueueHandle_t commandQueue;
@@ -79,6 +105,11 @@ void GUITask(void *pvParameters);
 void GUIUpdateTask(void *pvParameters);
 void updateOnDemandArc(lv_timer_t * timer);
 void my_touchpad_read (lv_indev_t * indev_driver, lv_indev_data_t * data);
+
+static void set_angle(void * obj, int32_t v)
+{
+    lv_arc_set_value((lv_obj_t *)obj, v);
+}
 
 void setup()
 {
@@ -95,8 +126,8 @@ void setup()
   Serial.println(ESP.getFreePsram());
 
   // initialize the command queue
-  commandQueue = xQueueCreate(10, sizeof(timeQueue));
-  onDemandQueue = xQueueCreate(2, sizeof(int8_t));
+  commandQueue = xQueueCreate(10, sizeof(guiCommandQueue));
+  onDemandQueue = xQueueCreate(10, sizeof(onDemandCommand));
 
   // create GUI task runs in code 0 
   xTaskCreatePinnedToCore(GUITask, "GUITask", 18096, NULL, 3, NULL, 0);
@@ -219,7 +250,7 @@ void GUITask(void *pvParameters){
   Serial.print("PSRAM free size: ");
   Serial.println(ESP.getFreePsram());
 
-  timeQueue qdata;
+  guiCommandQueue qdata;
 
   xTaskCreatePinnedToCore(GUIUpdateTask, "GUIUpdateTask", 8096, NULL, 3, NULL, 1);
 
@@ -239,21 +270,6 @@ void GUITask(void *pvParameters){
       // update the time, ampmLbl and dateLbl on the screen
       switch(qdata.command){
         case 0:
-          char time[10];
-          sprintf(time, "%02d:%02d", qdata.hour, qdata.minute);
-          lv_label_set_text(ui_timeLbl, time);
-          if(qdata.ampm){
-            lv_label_set_text(ui_ampmLbl, "PM");
-          }else{
-            lv_label_set_text(ui_ampmLbl, "AM");
-          }
-    
-          // date - month-date Weekday
-          char dateStr[15];
-          sprintf(dateStr, "%02d-%02d %s", qdata.month, qdata.day, (qdata.weekday == 0) ? "SUN" : (qdata.weekday == 1) ? "MON" : (qdata.weekday == 2) ? "TUE" : (qdata.weekday == 3) ? "WED" : (qdata.weekday == 4) ? "THU" : (qdata.weekday == 5) ? "FRI" : "SAT");
-          lv_label_set_text(ui_dateLbl, dateStr);
-          break;
-        case 1:
           switch(qdata.screen){
             case 1:
               _ui_screen_change(&ui_HomeScn, qdata.moveDir, 500, 0, &ui_HomeScn_screen_init);
@@ -266,32 +282,57 @@ void GUITask(void *pvParameters){
               break;
           }
           break;
-        case 2:
-          lv_obj_remove_flag(ui_backBtn2, LV_OBJ_FLAG_HIDDEN);
-          lv_obj_remove_flag(ui_wifiTimerArc, LV_OBJ_FLAG_HIDDEN);
-          lv_label_set_text(ui_Label4, "Connect to \n\nCryptoWatch v1.0 WiFi ");
-          lv_obj_set_style_text_color(ui_Label4, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
-          lv_arc_set_value(ui_wifiTimerArc, 0);
-          arcTimer = lv_timer_create(updateOnDemandArc, 1000, NULL);
-          // lv_timer_set_auto_delete(arcTimer, true);
-          lv_timer_set_repeat_count(arcTimer, 60);
-          lv_timer_ready(arcTimer);
+        case 1:
+          switch(qdata.homeScreen.command){
+            case 0:
+              char time[10];
+              sprintf(time, "%02d:%02d", qdata.homeScreen.hour, qdata.homeScreen.minute);
+              lv_label_set_text(ui_timeLbl, time);
+              if(qdata.homeScreen.ampm){
+                lv_label_set_text(ui_ampmLbl, "PM");
+              }else{
+                lv_label_set_text(ui_ampmLbl, "AM");
+              }
+        
+              // date - month-date Weekday
+              char dateStr[15];
+              sprintf(dateStr, "%02d-%02d %s", qdata.homeScreen.month, qdata.homeScreen.day, (qdata.homeScreen.weekday == 0) ? "SUN" : (qdata.homeScreen.weekday == 1) ? "MON" : (qdata.homeScreen.weekday == 2) ? "TUE" : (qdata.homeScreen.weekday == 3) ? "WED" : (qdata.homeScreen.weekday == 4) ? "THU" : (qdata.homeScreen.weekday == 5) ? "FRI" : "SAT");
+              lv_label_set_text(ui_dateLbl, dateStr);
+              break;
+          }
+          break;
+
+        case 3:
+          switch(qdata.wifiScreen.command){
+            case 0:
+              lv_label_set_text(ui_Label4, qdata.wifiScreen.text);
+              lv_obj_set_style_text_color(ui_Label4, qdata.wifiScreen.textColor, LV_PART_MAIN | LV_STATE_DEFAULT);
+              break;
+            case 1:
+              lv_arc_set_value(ui_wifiTimerArc, qdata.wifiScreen.arcValue);
+              lv_obj_set_style_arc_color(ui_wifiTimerArc, qdata.wifiScreen.arcColor , LV_PART_INDICATOR | LV_STATE_DEFAULT);
+              break;
+            case 2:
+              if(qdata.wifiScreen.hideCancelBtn){
+                lv_obj_add_flag(ui_backBtn2, LV_OBJ_FLAG_HIDDEN);
+              }else{
+                lv_obj_remove_flag(ui_backBtn2, LV_OBJ_FLAG_HIDDEN);
+              }
+              break;
+          }
           break; 
         case 4:
-          lv_obj_add_flag(ui_backBtn2, LV_OBJ_FLAG_HIDDEN);
-          lv_obj_add_flag(ui_wifiTimerArc, LV_OBJ_FLAG_HIDDEN);
-          break; 
-        case 5:
-          lv_label_set_text(ui_Label4, qdata.text);
-          lv_obj_set_style_text_color(ui_Label4, qdata.color, LV_PART_MAIN | LV_STATE_DEFAULT);
-          break;      
+          setOndemardWifi = qdata.setOndemardWifi;
+          break;     
           
       }
     }
 
     if(setOndemardWifi){
+      setOndemardWifi = false;
       // send onDemandQueue 
-      int8_t data = 1;
+      onDemandCommand data;
+      data.command = 1;
       xQueueSend(onDemandQueue, &data, 0);
     }
     lv_timer_handler(); /* let the GUI do its work */
@@ -300,24 +341,37 @@ void GUITask(void *pvParameters){
 }
 
 void GUIUpdateTask(void *pvParameters){
-  timeQueue qdata;
+  guiCommandQueue qdata;
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 
   // check if the wifi is connected
   if (WiFi.status() != WL_CONNECTED) {
     
-    // change to screen 3
-    qdata.command = 1;
-    qdata.screen = 3;
-    qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
-    xQueueSend(commandQueue, &qdata, 0);
-    qdata.command = 5;
-    qdata.text = "Connect to \n\nCryptoWatch v1.0 WiFi ";
-    qdata.color = lv_color_hex(0xFFFFFF);
+    delay(500);
+    // hide the back button 
+    qdata.command = 3;
+    qdata.wifiScreen.command = 2;
+    qdata.wifiScreen.hideCancelBtn = true;
     xQueueSend(commandQueue, &qdata, 0);
 
-    // hide the back button and the arc
-    qdata.command = 4;
+    // set the arc value to 100
+    qdata.command = 3;
+    qdata.wifiScreen.command = 1;
+    qdata.wifiScreen.arcValue = 100;
+    qdata.wifiScreen.arcColor = lv_color_hex(0xFFFFFF);
+    xQueueSend(commandQueue, &qdata, 0);
+
+    // change text of ui_Label4 as connected
+    qdata.command = 3;
+    qdata.wifiScreen.command = 0;
+    qdata.wifiScreen.text = "Connect to \n\nCryptoWatch v1.0 WiFi ";
+    qdata.wifiScreen.textColor = lv_color_hex(0xFFFFFF);
+    xQueueSend(commandQueue, &qdata, 0);
+
+    // change to screen 3
+    qdata.command = 0;
+    qdata.screen = 3;
+    qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
     xQueueSend(commandQueue, &qdata, 0);
     
     // wm.resetSettings(); 
@@ -327,33 +381,72 @@ void GUIUpdateTask(void *pvParameters){
     if(res) {
       Serial.println("connected...yeey :)");
 
+      // set arc color to green
+      qdata.command = 3;
+      qdata.wifiScreen.command = 1;
+      qdata.wifiScreen.arcColor = lv_color_hex(0x00FF55);
+      xQueueSend(commandQueue, &qdata, 0);
       // change text of ui_Label4 as connected
-      qdata.command = 5;
-      qdata.text = "Connected to WiFi";
-      qdata.color = lv_color_hex(0x00FF55);
+      // qdata.command = 3;
+      // qdata.wifiScreen.command = 0;
+      // sprintf(qdata.wifiScreen.text, "Connected to WiFi\n%s", WiFi.SSID().c_str());
+      // qdata.wifiScreen.textColor = lv_color_hex(0x00FF55);
+      // xQueueSend(commandQueue, &qdata, 0);
+      // delay(1000);
+
+      // qdata.command = 3;
+      // qdata.wifiScreen.command = 0;
+      // sprintf(qdata.wifiScreen.text, "Connected to WiFi\n%s", WiFi.SSID().c_str());
+      // qdata.wifiScreen.textColor = lv_color_hex(0xFFFFFF);
+      // xQueueSend(commandQueue, &qdata, 0);
+      // delay(1000);
+
+
+      qdata.command = 3;
+      qdata.wifiScreen.command = 0;
+      qdata.wifiScreen.text = "Configuring the\nCryptoWatch v1.0";
+      qdata.wifiScreen.textColor = lv_color_hex(0xFFFFFF);
       xQueueSend(commandQueue, &qdata, 0);
       delay(1000);
-      qdata.command = 5;
-      qdata.text = "Connected to WiFi";
-      qdata.color = lv_color_hex(0xFFFFFF);
-      xQueueSend(commandQueue, &qdata, 0);
-      delay(1000);
-      qdata.command = 5;
-      qdata.text = "Connected to WiFi";
-      qdata.color = lv_color_hex(0x00FF55);
-      xQueueSend(commandQueue, &qdata, 0);
-      delay(1000);
-      
+
+      while(1){
+        if(!getLocalTime(&timeinfo)){
+          Serial.println("Failed to obtain time");
+          // continue;
+        }else{
+          // change text of ui_Label4
+          qdata.command = 3;
+          qdata.wifiScreen.command = 0;
+          qdata.wifiScreen.text = "Configured the\nCryptoWatch v1.0";
+          qdata.wifiScreen.textColor = lv_color_hex(0x00FF55);
+          xQueueSend(commandQueue, &qdata, 0);
+          delay(1000);
+
+          Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
+          // get epoch time
+          time_t epochTime = mktime(&timeinfo);
+          Serial.print("Epoch Time: ");
+          Serial.println(epochTime);
+
+          // Convert the UNIX timestamp to a tm structure
+          struct tm *tm = localtime(&epochTime);
+
+          // Set the RTC time using the settimeofday function
+          struct timeval tv;
+          tv.tv_sec = epochTime;
+          tv.tv_usec = 0;
+          settimeofday(&tv, 0);
+
+          break;
+        } 
+        delay(1000);
+      }
+
       // change the screen HomeScn
-      qdata.command = 1;
+      qdata.command = 0;
       qdata.screen = 1;
       qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_LEFT;
       xQueueSend(commandQueue, &qdata, 0);
-      qdata.command = 5;
-      qdata.text = "Connect to \n\nCryptoWatch v1.0 WiFi ";
-      qdata.color = lv_color_hex(0xFFFFFF);
-      xQueueSend(commandQueue, &qdata, 0);
-      delay(1000);
       
     } else {
       Serial.println("not connected... :(");
@@ -372,54 +465,61 @@ void GUIUpdateTask(void *pvParameters){
     
   }
 
-  uint8_t onDemandCommand;
+  onDemandCommand onDemandCommand;
 
   while(1){
     if(xQueueReceive(onDemandQueue, &onDemandCommand, 0) == pdTRUE){
       // update the time, ampmLbl and dateLbl on the screen
-      if(onDemandCommand == 1){
-        // change the screen to 2
-        qdata.command = 1;
+      if(onDemandCommand.command == 1){
+        onDemandCommand.command = 0;
+        // update the arc color
+        qdata.command = 3;
+        qdata.wifiScreen.command = 1;
+        qdata.wifiScreen.arcColor = lv_color_hex(0xFFFFFF);
+        xQueueSend(commandQueue, &qdata, 0);
+        delay(100);
+
+        // change text of ui_Label4
+        qdata.command = 3;
+        qdata.wifiScreen.command = 0;
+        sprintf(qdata.wifiScreen.text, "Connect to \n\nCryptoWatch v1.0 WiFi ");
+        qdata.wifiScreen.textColor = lv_color_hex(0xFFFFFF);
+        xQueueSend(commandQueue, &qdata, 0);
+        delay(100);
+
+        // unhide the back button
+        qdata.command = 3;
+        qdata.wifiScreen.command = 2;
+        qdata.wifiScreen.hideCancelBtn = false;
+        xQueueSend(commandQueue, &qdata, 0);
+        delay(100);
+
+        // change the screen to WifiScn
+        qdata.command = 0;
         qdata.screen = 3;
-        qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_LEFT;
+        qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
         xQueueSend(commandQueue, &qdata, 0);
 
-        qdata.command = 2;
-        xQueueSend(commandQueue, &qdata, 0);
+        // wm.setConfigPortalTimeout(10);
       }
     }
     
-    // check if the wifi is connected
-    if (WiFi.status() == WL_CONNECTED) {
-      if(!getLocalTime(&timeinfo)){
-        Serial.println("Failed to obtain time");
-        // continue;
-      }else{
-        Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
+    time_t now;
+    time(&now);
+    struct tm *tm = localtime(&now);
 
-        // get hour, minute and date, month and weekday, am/pm seperately        
-        qdata.hour = timeinfo.tm_hour;
-        qdata.minute = timeinfo.tm_min;
-        qdata.day = timeinfo.tm_mday;
-        qdata.month = timeinfo.tm_mon + 1;
-        qdata.weekday = timeinfo.tm_wday;
-        qdata.ampm = qdata.hour >= 12 ? 1 : 0;
-        // hour = hour / 12
-        qdata.command = 0;
-        xQueueSend(commandQueue, &qdata, 0);
-      } 
-    }
+    // get hour, minute and date, month and weekday, am/pm seperately
+    qdata.homeScreen.hour = tm->tm_hour;
+    qdata.homeScreen.minute = tm->tm_min;
+    qdata.homeScreen.day = tm->tm_mday;
+    qdata.homeScreen.month = tm->tm_mon + 1;
+    qdata.homeScreen.weekday = tm->tm_wday;
+    qdata.homeScreen.ampm = qdata.homeScreen.hour >= 12 ? 1 : 0;
+    // hour = hour / 12
+    qdata.command = 1;
+    qdata.homeScreen.command = 0;
+    xQueueSend(commandQueue, &qdata, 0);
+
     delay(1000);
   }
-}
-
-void updateOnDemandArc(lv_timer_t * timer)
-{
-  // increment the value of the arc by 5
-  // if(setOndemardWifi){
-    lv_arc_set_value(ui_wifiTimerArc, lv_arc_get_value(ui_wifiTimerArc) + 2);
-  // }else{
-  //   lv_arc_set_value(ui_wifiTimerArc, 0);
-
-  // }
 }

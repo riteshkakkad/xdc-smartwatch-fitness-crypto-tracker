@@ -17,7 +17,8 @@ void ui_WifiScn_screen_init(void)
     lv_obj_set_height(ui_wifiTimerArc, 235);
     lv_obj_set_align(ui_wifiTimerArc, LV_ALIGN_CENTER);
     lv_arc_set_value(ui_wifiTimerArc, 0);
-    lv_arc_set_bg_angles(ui_wifiTimerArc, 270, 269);
+    lv_arc_set_rotation(ui_wifiTimerArc, 270);
+    lv_arc_set_bg_angles(ui_wifiTimerArc, 0, 360);
     lv_obj_set_style_arc_color(ui_wifiTimerArc, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_opa(ui_wifiTimerArc, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
@@ -28,7 +29,7 @@ void ui_WifiScn_screen_init(void)
 
     lv_obj_set_style_bg_color(ui_wifiTimerArc, lv_color_hex(0xFFFFFF), LV_PART_KNOB | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_wifiTimerArc, 0, LV_PART_KNOB | LV_STATE_DEFAULT);
-
+    
     ui_backBtn2 = lv_button_create(ui_WifiScn);
     lv_obj_set_width(ui_backBtn2, 100);
     lv_obj_set_height(ui_backBtn2, 40);
