@@ -35,6 +35,7 @@ void backToHomeCB(lv_event_t * e)
 
 void cancelWiFiCB(lv_event_t * e)
 {
-	setOndemardWifi = false;
+	// Your code here
+	cancelOnDemandWifi = true;
 	
 }

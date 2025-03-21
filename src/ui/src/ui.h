@@ -95,7 +95,7 @@ extern lv_obj_t * ui_Label5;
 extern lv_obj_t * ui_Label4;
 void ui_event_backBtn2(lv_event_t * e);
 extern bool setOndemardWifi;
-extern lv_timer_t * arcTimer;
+extern bool cancelOnDemandWifi;
 // CUSTOM VARIABLES
 
 // EVENTS

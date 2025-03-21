@@ -30,7 +30,7 @@ static const uint16_t screenWidth  = 240;
 static const uint16_t screenHeight = 240;
 
 #define SCREEN_BUFFER_SIZE (240 * 240)  
-enum { SCREENBUFFER_SIZE_PIXELS = screenWidth * screenHeight /2 };
+enum { SCREENBUFFER_SIZE_PIXELS = screenWidth * screenHeight /4 };
 static lv_color_t buf [SCREENBUFFER_SIZE_PIXELS];
 
 TFT_eSPI tft = TFT_eSPI(screenWidth, screenHeight);
@@ -45,6 +45,17 @@ struct tm timeinfo;
 const char* ntpServer = "pool.ntp.org";
 const long  gmtOffset_sec = 19800;
 const int   daylightOffset_sec = 1;
+int timeupdateInterval = 1000;
+uint8_t lastTimeUpdate = 0;
+
+// parameters for on demand wifi
+unsigned int  timeout   = 120; // seconds to run for
+unsigned int  startTime = millis();
+bool portalRunning      = false;
+bool startAP            = true;
+int arcUpdateInterval   = 1200;
+int lastArcUpdate       = 0; 
+uint8_t arcValue       = 0;
 
 uint8_t current_screent = 1;
 
@@ -91,8 +102,10 @@ struct guiCommandQueue {
   uint8_t setOndemardWifi;
 };
 
-struct onDemandCommand{
-  uint8_t command;
+struct commandFromGUI{
+  uint8_t command; // 0 - set wifi on demand, 1 - cancel wifi on demand
+  uint8_t setOndemardWifi;
+  uint8_t cancelOnDemandWifi;
 };
 
 QueueHandle_t commandQueue;
@@ -103,8 +116,8 @@ void my_disp_flush (lv_display_t *disp, const lv_area_t *area, uint8_t *pixelmap
 static uint32_t my_tick_get_cb (void);
 void GUITask(void *pvParameters);
 void GUIUpdateTask(void *pvParameters);
-void updateOnDemandArc(lv_timer_t * timer);
 void my_touchpad_read (lv_indev_t * indev_driver, lv_indev_data_t * data);
+
 
 static void set_angle(void * obj, int32_t v)
 {
@@ -126,8 +139,8 @@ void setup()
   Serial.println(ESP.getFreePsram());
 
   // initialize the command queue
-  commandQueue = xQueueCreate(10, sizeof(guiCommandQueue));
-  onDemandQueue = xQueueCreate(10, sizeof(onDemandCommand));
+  commandQueue = xQueueCreate(50, sizeof(guiCommandQueue));
+  onDemandQueue = xQueueCreate(10, sizeof(commandFromGUI));
 
   // create GUI task runs in code 0 
   xTaskCreatePinnedToCore(GUITask, "GUITask", 18096, NULL, 3, NULL, 0);
@@ -331,8 +344,18 @@ void GUITask(void *pvParameters){
     if(setOndemardWifi){
       setOndemardWifi = false;
       // send onDemandQueue 
-      onDemandCommand data;
+      commandFromGUI data;
+      data.command = 0;
+      data.setOndemardWifi = 1;
+      xQueueSend(onDemandQueue, &data, 0);
+    }
+
+    if(cancelOnDemandWifi){
+      cancelOnDemandWifi = false;
+      // send onDemandQueue 
+      commandFromGUI data;
       data.command = 1;
+      data.cancelOnDemandWifi = 1;
       xQueueSend(onDemandQueue, &data, 0);
     }
     lv_timer_handler(); /* let the GUI do its work */
@@ -437,6 +460,7 @@ void GUIUpdateTask(void *pvParameters){
           tv.tv_usec = 0;
           settimeofday(&tv, 0);
 
+          lastTimeUpdate = millis();
           break;
         } 
         delay(1000);
@@ -447,6 +471,26 @@ void GUIUpdateTask(void *pvParameters){
       qdata.screen = 1;
       qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_LEFT;
       xQueueSend(commandQueue, &qdata, 0);
+
+      // update the arc color
+      qdata.command = 3;
+      qdata.wifiScreen.command = 1;
+      qdata.wifiScreen.arcColor = lv_color_hex(0xFFFFFF);
+      xQueueSend(commandQueue, &qdata, 0);
+
+      // change text of ui_Label4
+      qdata.command = 3;
+      qdata.wifiScreen.command = 0;
+      sprintf(qdata.wifiScreen.text, "Connect to \n\nCryptoWatch v1.0 WiFi ");
+      qdata.wifiScreen.textColor = lv_color_hex(0xFFFFFF);
+      xQueueSend(commandQueue, &qdata, 0);
+
+      // unhide the back button
+      qdata.command = 3;
+      qdata.wifiScreen.command = 2;
+      qdata.wifiScreen.hideCancelBtn = false;
+      xQueueSend(commandQueue, &qdata, 0);
+      // delay(100);
       
     } else {
       Serial.println("not connected... :(");
@@ -465,61 +509,104 @@ void GUIUpdateTask(void *pvParameters){
     
   }
 
-  onDemandCommand onDemandCommand;
+  commandFromGUI onDemandCommand;
 
   while(1){
     if(xQueueReceive(onDemandQueue, &onDemandCommand, 0) == pdTRUE){
-      // update the time, ampmLbl and dateLbl on the screen
-      if(onDemandCommand.command == 1){
-        onDemandCommand.command = 0;
-        // update the arc color
-        qdata.command = 3;
-        qdata.wifiScreen.command = 1;
-        qdata.wifiScreen.arcColor = lv_color_hex(0xFFFFFF);
-        xQueueSend(commandQueue, &qdata, 0);
-        delay(100);
+      switch(onDemandCommand.command){
+        case 0:
+          // set arc value to 0
+          qdata.command = 3;
+          qdata.wifiScreen.command = 1;
+          qdata.wifiScreen.arcValue = 0;
+          xQueueSend(commandQueue, &qdata, 0);
 
-        // change text of ui_Label4
-        qdata.command = 3;
-        qdata.wifiScreen.command = 0;
-        sprintf(qdata.wifiScreen.text, "Connect to \n\nCryptoWatch v1.0 WiFi ");
-        qdata.wifiScreen.textColor = lv_color_hex(0xFFFFFF);
-        xQueueSend(commandQueue, &qdata, 0);
-        delay(100);
+          // change the screen to WifiScn
+          qdata.command = 0;
+          qdata.screen = 3;
+          qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
+          xQueueSend(commandQueue, &qdata, 0);
 
-        // unhide the back button
-        qdata.command = 3;
-        qdata.wifiScreen.command = 2;
-        qdata.wifiScreen.hideCancelBtn = false;
-        xQueueSend(commandQueue, &qdata, 0);
-        delay(100);
 
-        // change the screen to WifiScn
-        qdata.command = 0;
-        qdata.screen = 3;
-        qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
-        xQueueSend(commandQueue, &qdata, 0);
+          Serial.println("On Demand WiFi started");
+          wm.setConfigPortalBlocking(false);
+          wm.startConfigPortal("CryptoWatch v1.0");
 
-        // wm.setConfigPortalTimeout(10);
+          portalRunning = true;
+          startTime = millis();
+          lastArcUpdate = millis();
+          arcValue = 0;
+          break;
+        
+        case 1:
+          // change screen to MenuScn
+          qdata.command = 0;
+          qdata.screen = 2;
+          qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
+          xQueueSend(commandQueue, &qdata, 0);
+          break;
       }
     }
     
-    time_t now;
-    time(&now);
-    struct tm *tm = localtime(&now);
+    // update the time every 1 second
+    if(millis() - lastTimeUpdate > timeupdateInterval){
+      lastTimeUpdate = millis();
+      
+      time_t now;
+      time(&now);
+      struct tm *tm = localtime(&now);
 
-    // get hour, minute and date, month and weekday, am/pm seperately
-    qdata.homeScreen.hour = tm->tm_hour;
-    qdata.homeScreen.minute = tm->tm_min;
-    qdata.homeScreen.day = tm->tm_mday;
-    qdata.homeScreen.month = tm->tm_mon + 1;
-    qdata.homeScreen.weekday = tm->tm_wday;
-    qdata.homeScreen.ampm = qdata.homeScreen.hour >= 12 ? 1 : 0;
-    // hour = hour / 12
-    qdata.command = 1;
-    qdata.homeScreen.command = 0;
-    xQueueSend(commandQueue, &qdata, 0);
+      // get hour, minute and date, month and weekday, am/pm seperately
+      qdata.homeScreen.hour = tm->tm_hour;
+      qdata.homeScreen.minute = tm->tm_min;
+      qdata.homeScreen.day = tm->tm_mday;
+      qdata.homeScreen.month = tm->tm_mon + 1;
+      qdata.homeScreen.weekday = tm->tm_wday;
+      qdata.homeScreen.ampm = qdata.homeScreen.hour >= 12 ? 1 : 0;
+      qdata.homeScreen.hour = qdata.homeScreen.hour % 12;
+      if(qdata.homeScreen.hour == 0){
+        qdata.homeScreen.hour = 12;
+      }
 
-    delay(1000);
+      qdata.command = 1;
+      qdata.homeScreen.command = 0;
+      xQueueSend(commandQueue, &qdata, 0);
+    }
+    
+    // is auto timeout portal running
+    if(portalRunning){
+      wm.process(); // do processing
+
+      // update the arc every 1 second
+      if(millis() - lastArcUpdate > arcUpdateInterval){
+        arcValue++;
+        lastArcUpdate = millis();
+        qdata.command = 3;
+        qdata.wifiScreen.command = 1;
+        qdata.wifiScreen.arcValue = arcValue;
+        xQueueSend(commandQueue, &qdata, 0);
+      }
+
+      // check for timeout
+      if((millis()-startTime) > (timeout*1000)){
+        Serial.println("portaltimeout");
+        portalRunning = false;
+        if(startAP){
+          wm.stopConfigPortal();
+
+          // move to MenuScn
+          qdata.command = 0;
+          qdata.screen = 2;
+          qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
+          xQueueSend(commandQueue, &qdata, 0);
+
+          // set arc value to 100
+          qdata.command = 3;
+          qdata.wifiScreen.command = 1;
+          qdata.wifiScreen.arcValue = 100;
+          xQueueSend(commandQueue, &qdata, 0);
+        } 
+      }
+    }
   }
 }

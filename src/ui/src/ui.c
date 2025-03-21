@@ -57,7 +57,7 @@ lv_obj_t * ui_backBtn2;
 lv_obj_t * ui_Label5;
 lv_obj_t * ui_Label4;
 bool setOndemardWifi = false;
-lv_timer_t * arcTimer;
+bool cancelOnDemandWifi = false;
 
 // CUSTOM VARIABLES
 
