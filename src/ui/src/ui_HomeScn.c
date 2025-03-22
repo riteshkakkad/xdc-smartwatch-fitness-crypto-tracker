@@ -81,8 +81,8 @@ void ui_HomeScn_screen_init(void)
     lv_obj_set_x(ui_cryptoRateLbl, -47);
     lv_obj_set_y(ui_cryptoRateLbl, 0);
     lv_obj_set_align(ui_cryptoRateLbl, LV_ALIGN_CENTER);
-    lv_label_set_text(ui_cryptoRateLbl, "604.24");
-    lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_label_set_text(ui_cryptoRateLbl, "--:--");
+    lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_cryptoRateLbl, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_cryptoRateLbl, &ui_font_inter32sb, LV_PART_MAIN | LV_STATE_DEFAULT);
 
@@ -102,7 +102,7 @@ void ui_HomeScn_screen_init(void)
     lv_obj_set_x(ui_cryptoPercentageLbl, 78);
     lv_obj_set_y(ui_cryptoPercentageLbl, 0);
     lv_obj_set_align(ui_cryptoPercentageLbl, LV_ALIGN_CENTER);
-    lv_label_set_text(ui_cryptoPercentageLbl, "4.6%");
+    lv_label_set_text(ui_cryptoPercentageLbl, "0.0%");
     lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_cryptoPercentageLbl, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_cryptoPercentageLbl, &ui_font_inter16sb, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -144,7 +144,7 @@ void ui_HomeScn_screen_init(void)
     lv_obj_set_x(ui_stepCountLbl, 0);
     lv_obj_set_y(ui_stepCountLbl, -3);
     lv_obj_set_align(ui_stepCountLbl, LV_ALIGN_CENTER);
-    lv_label_set_text(ui_stepCountLbl, "1245");
+    lv_label_set_text(ui_stepCountLbl, "0");
     lv_obj_set_style_text_color(ui_stepCountLbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_stepCountLbl, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_stepCountLbl, &ui_font_inter20b, LV_PART_MAIN | LV_STATE_DEFAULT);

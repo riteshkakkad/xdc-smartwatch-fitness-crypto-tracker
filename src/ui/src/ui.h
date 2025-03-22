@@ -107,6 +107,7 @@ LV_IMG_DECLARE(ui_img_star_png);    // assets/star.png
 LV_IMG_DECLARE(ui_img_up_triangle_png);    // assets/up_triangle.png
 LV_IMG_DECLARE(ui_img_battery_png);    // assets/battery.png
 LV_IMG_DECLARE(ui_img_brightness_png);    // assets/brightness.png
+LV_IMG_DECLARE(ui_img_down_triangle_png);    // assets/down_triangle.png
 
 // FONTS
 LV_FONT_DECLARE(ui_font_inter16sb);

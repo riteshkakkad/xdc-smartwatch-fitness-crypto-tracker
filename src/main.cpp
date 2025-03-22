@@ -9,6 +9,16 @@
 #include "time.h"
 #include <NTPClient.h>
 #include <WiFiUdp.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include "ArduinoJson.h"
+
+#define SENSOR_SDA  6
+#define SENSOR_SCL  7
+#define IMU_INT1  4
+#define IMU_INT2  3
 
 #define TFT_MISO -1
 // #define TFT_MISO 12
@@ -24,7 +34,37 @@
 #define TOUCH_RST 13
 #define TOUCH_IRQ 5
 
+#define BAT_VOLTAGE_PIN 1
+#define Measurement_offset 0.992857  
+
 #define LVGL_TICK_PERIOD_MS 5
+
+// crypto API parameters
+const char*  server = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest?id=2634";
+const char*  apiKey = "125646da-9cb9-431c-a815-e3d9e0c6f831";
+const char* test_root_ca= \
+"-----BEGIN CERTIFICATE-----\n" \
+"MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF\n" \
+"ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6\n" \
+"b24gUm9vdCBDQSAxMB4XDTE1MDUyNjAwMDAwMFoXDTM4MDExNzAwMDAwMFowOTEL\n" \
+"MAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJv\n" \
+"b3QgQ0EgMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALJ4gHHKeNXj\n" \
+"ca9HgFB0fW7Y14h29Jlo91ghYPl0hAEvrAIthtOgQ3pOsqTQNroBvo3bSMgHFzZM\n" \
+"9O6II8c+6zf1tRn4SWiw3te5djgdYZ6k/oI2peVKVuRF4fn9tBb6dNqcmzU5L/qw\n" \
+"IFAGbHrQgLKm+a/sRxmPUDgH3KKHOVj4utWp+UhnMJbulHheb4mjUcAwhmahRWa6\n" \
+"VOujw5H5SNz/0egwLX0tdHA114gk957EWW67c4cX8jJGKLhD+rcdqsq08p8kDi1L\n" \
+"93FcXmn/6pUCyziKrlA4b9v7LWIbxcceVOF34GfID5yHI9Y/QCB/IIDEgEw+OyQm\n" \
+"jgSubJrIqg0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC\n" \
+"AYYwHQYDVR0OBBYEFIQYzIU07LwMlJQuCFmcx7IQTgoIMA0GCSqGSIb3DQEBCwUA\n" \
+"A4IBAQCY8jdaQZChGsV2USggNiMOruYou6r4lK5IpDB/G/wkjUu0yKGX9rbxenDI\n" \
+"U5PMCCjjmCXPI6T53iHTfIUJrU6adTrCC2qJeHZERxhlbI1Bjjt/msv0tadQ1wUs\n" \
+"N+gDS63pYaACbvXy8MWy7Vu33PqUXHeeE6V/Uq2V8viTO96LXFvKWlJbYK8U90vv\n" \
+"o/ufQJVtMVT8QtPHRh8jrdkPSHCa2XV4cdFyQzR1bldZwgJcJmApzyMZFo6IQ6XU\n" \
+"5MsI+yMRQ+hDKXJioaldXgjUkK642M4UwtBV8ob2xJNDd2ZhwLnoQdeXeGADbkpy\n" \
+"rqXRfboQnoZsG4q5WTP468SQvvG5\n" \
+"-----END CERTIFICATE-----\n";
+uint32_t lastTimeCrypto = 0;
+uint32_t intervalCrypto = 10000;
 
 static const uint16_t screenWidth  = 240;
 static const uint16_t screenHeight = 240;
@@ -34,14 +74,9 @@ enum { SCREENBUFFER_SIZE_PIXELS = screenWidth * screenHeight /4 };
 static lv_color_t buf [SCREENBUFFER_SIZE_PIXELS];
 
 TFT_eSPI tft = TFT_eSPI(screenWidth, screenHeight);
-// Arduino_DataBus *bus = new Arduino_HWSPI( TFT_DC, TFT_CS, TFT_SCLK, TFT_MOSI, TFT_MISO );
-// Arduino_GFX *gfx = new Arduino_GC9A01(bus, TFT_RST /* RST */);
 CST816S touch(6, 7,13,5);	// sda, scl, rst, irq
-WiFiManager wm;
-struct tm timeinfo;
-// WiFiUDP ntpUDP;
-// NTPClient timeClient(ntpUDP);
 
+// parameters for NTP Time
 const char* ntpServer = "pool.ntp.org";
 const long  gmtOffset_sec = 19800;
 const int   daylightOffset_sec = 1;
@@ -56,8 +91,7 @@ bool startAP            = true;
 int arcUpdateInterval   = 1200;
 int lastArcUpdate       = 0; 
 uint8_t arcValue       = 0;
-
-uint8_t current_screent = 1;
+bool deviceConnected   = false;
 
 #if LV_USE_LOG != 0
 /* Serial debugging */
@@ -69,13 +103,19 @@ void my_print(lv_log_level_t level, const char * buf)
 #endif
 
 struct homeScreenCommand{
-  uint8_t command; // 0 - time/date
+  uint8_t command; // 0 : time/date/battery/steps/temp, 1:cryptoRate
   uint8_t hour;
   uint8_t minute;
   uint8_t day;
   uint8_t month;
   uint8_t weekday;
   uint8_t ampm;
+  int stepCount;
+  int temp;
+  int batteryLvl;
+  String cryptoRate;
+  String percent_change_24h;
+  bool is_percent_change_24h_negative;
 };
 
 struct menuScreenCommand{
@@ -111,18 +151,16 @@ struct commandFromGUI{
 QueueHandle_t commandQueue;
 QueueHandle_t onDemandQueue;
 
+// task handlers
+TaskHandle_t handleOnDemand;
+
 void* allocate_psram(size_t size);
 void my_disp_flush (lv_display_t *disp, const lv_area_t *area, uint8_t *pixelmap);
 static uint32_t my_tick_get_cb (void);
 void GUITask(void *pvParameters);
 void GUIUpdateTask(void *pvParameters);
+void OndemandWiFiTask(void *pvParameters);
 void my_touchpad_read (lv_indev_t * indev_driver, lv_indev_data_t * data);
-
-
-static void set_angle(void * obj, int32_t v)
-{
-    lv_arc_set_value((lv_obj_t *)obj, v);
-}
 
 void setup()
 {
@@ -137,6 +175,9 @@ void setup()
   Serial.println(ESP.getPsramSize());
   Serial.print("PSRAM free size: ");
   Serial.println(ESP.getFreePsram());
+
+  //set the resolution to 12 bits (0-4095)
+  analogReadResolution(12);
 
   // initialize the command queue
   commandQueue = xQueueCreate(50, sizeof(guiCommandQueue));
@@ -245,7 +286,7 @@ void GUITask(void *pvParameters){
   lv_indev_set_read_cb( indev, my_touchpad_read );
 
   //Dim the TFT backlight
-  analogWrite(TFT_BL, 255); // values go from 0 to 255,
+  analogWrite(TFT_BL, 255/2); // values go from 0 to 255,
 
   ui_init();
 
@@ -265,7 +306,7 @@ void GUITask(void *pvParameters){
 
   guiCommandQueue qdata;
 
-  xTaskCreatePinnedToCore(GUIUpdateTask, "GUIUpdateTask", 8096, NULL, 3, NULL, 1);
+  xTaskCreatePinnedToCore(GUIUpdateTask, "GUIUpdateTask", 28096, NULL, 3, NULL, 1);
 
   printf("Setup done\n");
 
@@ -311,6 +352,33 @@ void GUITask(void *pvParameters){
               char dateStr[15];
               sprintf(dateStr, "%02d-%02d %s", qdata.homeScreen.month, qdata.homeScreen.day, (qdata.homeScreen.weekday == 0) ? "SUN" : (qdata.homeScreen.weekday == 1) ? "MON" : (qdata.homeScreen.weekday == 2) ? "TUE" : (qdata.homeScreen.weekday == 3) ? "WED" : (qdata.homeScreen.weekday == 4) ? "THU" : (qdata.homeScreen.weekday == 5) ? "FRI" : "SAT");
               lv_label_set_text(ui_dateLbl, dateStr);
+
+              // set the step count
+              char stepCountStr[10];
+              sprintf(stepCountStr, "%d", qdata.homeScreen.stepCount);
+              lv_label_set_text(ui_stepCountLbl, stepCountStr);
+
+              // set the temperature
+              char tempStr[10];
+              sprintf(tempStr, "%d°", qdata.homeScreen.temp);
+              lv_label_set_text(ui_tempLbl, tempStr);
+
+              // set the battery level
+              lv_bar_set_value(ui_Bar1, qdata.homeScreen.batteryLvl, LV_ANIM_OFF);
+              break;
+            case 1:
+              // set the crypto rate
+              lv_label_set_text(ui_cryptoRateLbl, qdata.homeScreen.cryptoRate.c_str());
+
+              // set the percent change 24h
+              if(qdata.homeScreen.is_percent_change_24h_negative){
+                lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+                lv_image_set_src(ui_arrowImg, &ui_img_down_triangle_png);
+              }else{
+                lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
+                lv_image_set_src(ui_arrowImg, &ui_img_up_triangle_png);
+              }
+              lv_label_set_text(ui_cryptoPercentageLbl, qdata.homeScreen.percent_change_24h.c_str());
               break;
           }
           break;
@@ -366,6 +434,12 @@ void GUITask(void *pvParameters){
 void GUIUpdateTask(void *pvParameters){
   guiCommandQueue qdata;
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  WiFiManager wm;
+  struct tm timeinfo;
+  commandFromGUI onDemandCommand;
+  WiFiClientSecure *client;
+  //create an HTTPClient instance
+  HTTPClient https;
 
   // check if the wifi is connected
   if (WiFi.status() != WL_CONNECTED) {
@@ -399,9 +473,12 @@ void GUIUpdateTask(void *pvParameters){
     
     // wm.resetSettings(); 
 
-    bool res = wm.autoConnect("CryptoWatch v1.0");
+    bool res = wm.autoConnect(" CryptoWatch v1.0 ");
 
     if(res) {
+      // delete wm 
+      wm.stopConfigPortal();
+      wm.stopWebPortal();
       Serial.println("connected...yeey :)");
 
       // set arc color to green
@@ -460,6 +537,14 @@ void GUIUpdateTask(void *pvParameters){
           tv.tv_usec = 0;
           settimeofday(&tv, 0);
 
+          // set the http clients
+          client = new WiFiClientSecure;
+
+          if(client){
+            // set secure client with certificate
+            client->setCACert(test_root_ca);
+          }
+
           lastTimeUpdate = millis();
           break;
         } 
@@ -495,7 +580,7 @@ void GUIUpdateTask(void *pvParameters){
     } else {
       Serial.println("not connected... :(");
 
-      // change text of ui_Label4
+      // TODO: handle this error.
       lv_label_set_text(ui_Label4, "Not Connected to WiFi\n Try again in 3");
       delay(500);
       lv_label_set_text(ui_Label4, "Not Connected to WiFi\n Try again in 2");
@@ -509,8 +594,6 @@ void GUIUpdateTask(void *pvParameters){
     
   }
 
-  commandFromGUI onDemandCommand;
-
   while(1){
     if(xQueueReceive(onDemandQueue, &onDemandCommand, 0) == pdTRUE){
       switch(onDemandCommand.command){
@@ -518,7 +601,7 @@ void GUIUpdateTask(void *pvParameters){
           // set arc value to 0
           qdata.command = 3;
           qdata.wifiScreen.command = 1;
-          qdata.wifiScreen.arcValue = 0;
+          qdata.wifiScreen.arcValue = 100;
           xQueueSend(commandQueue, &qdata, 0);
 
           // change the screen to WifiScn
@@ -527,18 +610,14 @@ void GUIUpdateTask(void *pvParameters){
           qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
           xQueueSend(commandQueue, &qdata, 0);
 
-
-          Serial.println("On Demand WiFi started");
-          wm.setConfigPortalBlocking(false);
-          wm.startConfigPortal("CryptoWatch v1.0");
-
-          portalRunning = true;
-          startTime = millis();
-          lastArcUpdate = millis();
-          arcValue = 0;
+          // create a task for on demand wifi
+          xTaskCreatePinnedToCore(OndemandWiFiTask, "OndemandWiFiTask", 8096, NULL, 3, &handleOnDemand, 0);
           break;
         
         case 1:
+          // delete the task
+          vTaskDelete(handleOnDemand);
+
           // change screen to MenuScn
           qdata.command = 0;
           qdata.screen = 2;
@@ -567,46 +646,144 @@ void GUIUpdateTask(void *pvParameters){
       if(qdata.homeScreen.hour == 0){
         qdata.homeScreen.hour = 12;
       }
-
+      // read the step counter
+      qdata.homeScreen.stepCount = 100;
+      // read the temperature
+      qdata.homeScreen.temp = 30;
+      // read the battery level
+      int Volts = analogReadMilliVolts(BAT_VOLTAGE_PIN);
+      qdata.homeScreen.batteryLvl = (Volts * 3.0 / 1000.0) / Measurement_offset;
+      Serial.printf("Battery Level: %d\n", qdata.homeScreen.batteryLvl);
+      
       qdata.command = 1;
       qdata.homeScreen.command = 0;
       xQueueSend(commandQueue, &qdata, 0);
     }
-    
-    // is auto timeout portal running
-    if(portalRunning){
-      wm.process(); // do processing
 
-      // update the arc every 1 second
-      if(millis() - lastArcUpdate > arcUpdateInterval){
-        arcValue++;
-        lastArcUpdate = millis();
-        qdata.command = 3;
-        qdata.wifiScreen.command = 1;
-        qdata.wifiScreen.arcValue = arcValue;
-        xQueueSend(commandQueue, &qdata, 0);
+    if(millis() - lastTimeCrypto > intervalCrypto){
+      lastTimeCrypto = millis();
+      // read the crypto rate
+      // read the crypto rate from API
+      if(client) {
+        https.addHeader("X-CMC_PRO_API_KEY", apiKey);
+        //Initializing an HTTPS communication using the secure client
+        if (https.begin(*client, server)) {  // HTTPS
+          // start connection and send HTTP header
+          int httpCode = https.GET();
+          // httpCode will be negative on error
+          if (httpCode > 0) {
+          // HTTP header has been send and Server response header has been handled
+          Serial.printf("[HTTPS] GET... code: %d\n", httpCode);
+          // file found at server
+            if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
+              // print server response payload
+              String payload = https.getString();
+              /*
+              API Response ->
+                {"status":{"timestamp":"2025-03-22T12:52:02.847Z",
+                "error_code":0,"error_message":null,"elapsed":42,
+                "credit_count":1,"notice":null},"data":{"2634":{"id":2634,
+                "name":"XDC Network","symbol":"XDC","slug":"xdc-network",
+                "num_market_pairs":132,"date_added":"2018-04-12T00:00:00.000Z",
+                "tags":[{"slug":"enterprise-solutions","name":"Enterprise Solutions",
+                "category":"INDUSTRY"},{"slug":"masternodes","name":"Masternodes",
+                "category":"CATEGORY"},{"slug":"smart-contracts","name":"Smart Contracts",
+                "category":"CATEGORY"},{"slug":"xdc-ecosystem","name":"XDC Ecosystem",
+                "category":"PLATFORM"},{"slug":"real-world-assets","name":"Real World Assets",
+                "category":"CATEGORY"},{"slug":"layer-1","name":"Layer 1","category":"CATEGORY"}],
+                "max_supply":null,"circulating_supply":15696558123.6,"total_supply":37980093159.6,
+                "is_active":1,"infinite_supply":false,"platform":null,"cmc_rank":61,"is_fiat":0,
+                "self_reported_circulating_supply":15696549621,"self_reported_market_cap":1135324043.7378092,
+                "tvl_ratio":null,"last_updated":"2025-03-22T12:50:00.000Z","quote":{"USD":{"price":0.07232952917365286,
+                "volume_24h":30813718.79009731,"volume_change_24h":-21.7263,
+                "percent_change_1h":0.22585061,"percent_change_24h":-2.94016178,
+                "percent_change_7d":5.90558087,"percent_change_30d":-18.89977369,
+                "percent_change_60d":-38.29822556,"percent_change_90d":-4.66137102,
+                "market_cap":1135324658.726864,"market_cap_dominance":0.0411,
+                "fully_diluted_market_cap":2747082256.21,"tvl":null,
+                "last_updated":"2025-03-22T12:50:00.000Z"}}}}}
+              */
+
+              // parse the JSON response
+              DynamicJsonDocument doc(1024);
+              DeserializationError error = deserializeJson(doc, payload);
+
+              if (error) {
+                Serial.print(F("deserializeJson() failed: "));
+                Serial.println(error.c_str());
+                qdata.homeScreen.cryptoRate = "--:--";
+              } else {
+                // get the price of the crypto
+                float price = doc["data"]["2634"]["quote"]["USD"]["price"];
+                float percent_change_24h = doc["data"]["2634"]["quote"]["USD"]["percent_change_24h"];
+                Serial.printf("Crypto Rate: %f\n", price);
+                qdata.homeScreen.cryptoRate = String(price, 5);
+                // percent_change_24h = "5.5%" remove the negativiy mark of the percent_change_24h
+
+                if(percent_change_24h >= 0){
+                  qdata.homeScreen.is_percent_change_24h_negative = false;
+                  qdata.homeScreen.percent_change_24h = String(percent_change_24h, 2) + "%";
+                }else{
+                  qdata.homeScreen.percent_change_24h = String(abs(percent_change_24h), 2) + "%";
+                  qdata.homeScreen.is_percent_change_24h_negative = true;
+                }
+            
+              }
+            }
+          }
+          else {
+            Serial.printf("[HTTPS] GET... failed, error: %s\n", https.errorToString(httpCode).c_str());
+            qdata.homeScreen.cryptoRate = "--:--";
+          }
+          https.end();
+        }
+      }
+      else {
+        Serial.printf("[HTTPS] Unable to connect\n");
+        qdata.homeScreen.cryptoRate = "--:--";
       }
 
-      // check for timeout
-      if((millis()-startTime) > (timeout*1000)){
-        Serial.println("portaltimeout");
-        portalRunning = false;
-        if(startAP){
-          wm.stopConfigPortal();
+      qdata.command = 1;
+      qdata.homeScreen.command = 1;
+      xQueueSend(commandQueue, &qdata, 0);
+    }
+    delay(1000);
+  }
+}
 
-          // move to MenuScn
-          qdata.command = 0;
-          qdata.screen = 2;
-          qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
-          xQueueSend(commandQueue, &qdata, 0);
+void OndemandWiFiTask(void *pvParameters){
+  WiFiManager wm;
+  guiCommandQueue qdata;
 
-          // set arc value to 100
-          qdata.command = 3;
-          qdata.wifiScreen.command = 1;
-          qdata.wifiScreen.arcValue = 100;
-          xQueueSend(commandQueue, &qdata, 0);
-        } 
-      }
+  Serial.println("On Demand WiFi started");
+  wm.setConfigPortalBlocking(false);
+  wm.startConfigPortal(" CryptoWatch v1.0 ");
+
+  startTime = millis();
+  // is auto timeout portal running
+  while(1){
+    wm.process(); // do processing
+
+    // check for timeout
+    if((millis()-startTime) > (timeout*1000)){
+      Serial.println("portaltimeout");
+      wm.stopConfigPortal();
+
+      // move to MenuScn
+      qdata.command = 0;
+      qdata.screen = 2;
+      qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
+      xQueueSend(commandQueue, &qdata, 0);
+
+      // set arc value to 100
+      qdata.command = 3;
+      qdata.wifiScreen.command = 1;
+      qdata.wifiScreen.arcValue = 100;
+      xQueueSend(commandQueue, &qdata, 0);
+
+      // delete the task
+      vTaskDelete(NULL);
+      
     }
   }
 }

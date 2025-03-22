@@ -2,5 +2,6 @@
     "files.associations": {
         "*.ejs": "html",
         "chrono": "cpp"
-    }
+    },
+    "idf.portWin": "COM3"
 }
