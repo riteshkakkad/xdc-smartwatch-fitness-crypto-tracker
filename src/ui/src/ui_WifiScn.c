@@ -21,7 +21,9 @@ void ui_WifiScn_screen_init(void)
     lv_arc_set_bg_angles(ui_wifiTimerArc, 0, 360);
     lv_obj_set_style_arc_color(ui_wifiTimerArc, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_opa(ui_wifiTimerArc, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-
+    lv_obj_remove_flag(ui_batteryArc, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_PRESS_LOCK | LV_OBJ_FLAG_CLICK_FOCUSABLE |
+        LV_OBJ_FLAG_GESTURE_BUBBLE | LV_OBJ_FLAG_SNAPPABLE | LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC |
+        LV_OBJ_FLAG_SCROLL_MOMENTUM | LV_OBJ_FLAG_SCROLL_CHAIN);     /// Flags
     lv_obj_set_style_arc_color(ui_wifiTimerArc, lv_color_hex(0x00FF55), LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_opa(ui_wifiTimerArc, 255, LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_width(ui_wifiTimerArc, 5, LV_PART_INDICATOR | LV_STATE_DEFAULT);

@@ -31,6 +31,7 @@ lv_obj_t * ui_Bar1;
 lv_obj_t * ui_Image2;
 lv_obj_t * ui_Panel2;
 lv_obj_t * ui_Panel1;
+lv_obj_t * ui_Label6;
 // CUSTOM VARIABLES
 
 // SCREEN: ui_MenuScn

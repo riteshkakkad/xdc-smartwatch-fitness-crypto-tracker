@@ -48,6 +48,7 @@ extern lv_obj_t * ui_Bar1;
 extern lv_obj_t * ui_Image2;
 extern lv_obj_t * ui_Panel2;
 extern lv_obj_t * ui_Panel1;
+extern lv_obj_t * ui_Label6;
 // CUSTOM VARIABLES
 
 // SCREEN: ui_MenuScn
@@ -110,6 +111,7 @@ LV_IMG_DECLARE(ui_img_brightness_png);    // assets/brightness.png
 LV_IMG_DECLARE(ui_img_down_triangle_png);    // assets/down_triangle.png
 
 // FONTS
+LV_FONT_DECLARE(ui_font_inter12sb);
 LV_FONT_DECLARE(ui_font_inter16sb);
 LV_FONT_DECLARE(ui_font_inter20b);
 LV_FONT_DECLARE(ui_font_inter20sb);

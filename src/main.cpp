@@ -74,7 +74,7 @@ static const uint16_t screenWidth  = 240;
 static const uint16_t screenHeight = 240;
 
 #define SCREEN_BUFFER_SIZE (240 * 240)  
-enum { SCREENBUFFER_SIZE_PIXELS = screenWidth * screenHeight /4 };
+enum { SCREENBUFFER_SIZE_PIXELS = screenWidth * screenHeight /10 };
 static lv_color_t buf [SCREENBUFFER_SIZE_PIXELS];
 
 TFT_eSPI tft = TFT_eSPI(screenWidth, screenHeight);
@@ -82,10 +82,6 @@ CST816S touch(6, 7,13,5);	// sda, scl, rst, irq
 SensorQMI8658 qmi;
 IMUdata acc;
 IMUdata gyr;
-
-uint8_t displayOn = true;
-
-bool restartDisplayTimer = false;
 
 // parameters for NTP Time
 const char* ntpServer = "pool.ntp.org";
@@ -126,7 +122,7 @@ struct homeScreenCommand{
   uint8_t weekday;
   uint8_t ampm;
   int stepCount;
-  int batteryLvl;
+  String batteryLvl;
   String cryptoRate;
   String percent_change_24h;
   bool is_percent_change_24h_negative;
@@ -147,7 +143,7 @@ struct wifiScreenCommand{
 };
 
 struct guiCommandQueue {
-  uint8_t command; // 0 - screen change, 1 - home screen, 2 - menu screen, 3 - wifi screen , 4 - onDemand, 5 - turn on display
+  uint8_t command; // 0 - screen change, 1 - home screen, 2 - menu screen, 3 - wifi screen , 4 - onDemand, 5 - turn on display, 6 - turn off display
   homeScreenCommand homeScreen;
   menuScreenCommand menuScreen;
   wifiScreenCommand wifiScreen;
@@ -157,7 +153,7 @@ struct guiCommandQueue {
 };
 
 struct commandFromGUI{
-  uint8_t command; // 0 - set wifi on demand, 1 - cancel wifi on demand, 2 - display touched
+  uint8_t command; // 0 - set wifi on demand, 1 - cancel wifi on demand, 2 - display touched, 3 - display off timer expired
   uint8_t setOndemardWifi;
   uint8_t cancelOnDemandWifi;
 };
@@ -168,23 +164,6 @@ QueueHandle_t onDemandQueue;
 // task handlers
 TaskHandle_t handleOnDemand;
 
-esp_timer_handle_t display_on_timer = nullptr;
-// once the timer expires, the display will be turned off
-const esp_timer_create_args_t display_on_timer_args = {
-  .callback = [](void *arg) { 
-    analogWrite(TFT_BL, 0);
-    displayOn = false;
-
-    // change to home screen
-    guiCommandQueue qdata;
-    qdata.command = 0;
-    qdata.screen = 1;
-    qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_LEFT;
-    xQueueSend(commandQueue, &qdata, 0);
-  },
-  .name = "display_on_timer"
-};
-
 void* allocate_psram(size_t size);
 void my_disp_flush (lv_display_t *disp, const lv_area_t *area, uint8_t *pixelmap);
 static uint32_t my_tick_get_cb (void);
@@ -192,6 +171,10 @@ void GUITask(void *pvParameters);
 void GUIUpdateTask(void *pvParameters);
 void OndemandWiFiTask(void *pvParameters);
 void my_touchpad_read (lv_indev_t * indev_driver, lv_indev_data_t * data);
+
+static void increase_lvgl_tick(void* arg) {
+  lv_tick_inc(portTICK_PERIOD_MS);
+}
 
 void setup()
 {
@@ -213,11 +196,11 @@ void setup()
   analogReadResolution(12);
 
   // initialize the command queue
-  commandQueue = xQueueCreate(50, sizeof(guiCommandQueue));
-  onDemandQueue = xQueueCreate(10, sizeof(commandFromGUI));
+  commandQueue = xQueueCreate(15, sizeof(guiCommandQueue));
+  onDemandQueue = xQueueCreate(15, sizeof(commandFromGUI));
 
   // create GUI task runs in code 0 
-  xTaskCreatePinnedToCore(GUITask, "GUITask", 28096, NULL, 3, NULL, 0);
+  xTaskCreatePinnedToCore(GUITask, "GUITask", 18096, NULL, 3, NULL, 0);
   // delay(500);
   // xTaskCreatePinnedToCore(GUIUpdateTask, "GUIUpdateTask", 8096, NULL, 3, NULL, 1);
 }
@@ -225,6 +208,7 @@ void setup()
 void loop()
 {
   vTaskDelete(NULL);
+  // delay(1000);
 }
 
 /*Set tick routine needed for LVGL internal timings*/
@@ -236,10 +220,12 @@ void my_disp_flush( lv_display_t *disp, const lv_area_t *area, uint8_t *pixelmap
   uint32_t w = ( area->x2 - area->x1 + 1 );
   uint32_t h = ( area->y2 - area->y1 + 1 );
 
-  tft.startWrite();
-  tft.setAddrWindow( area->x1, area->y1, w, h );
-  tft.pushColors( ( uint16_t * )pixelmap, w * h, true );
-  tft.endWrite();
+  TFT_eSPI* tftDriver = (TFT_eSPI *)lv_display_get_driver_data(disp);
+
+  tftDriver->startWrite();
+  tftDriver->setAddrWindow( area->x1, area->y1, w, h );
+  tftDriver->pushColors( ( uint16_t * )pixelmap, w * h, true );
+  tftDriver->endWrite();
 
 
   lv_disp_flush_ready( disp );
@@ -252,21 +238,22 @@ void my_touchpad_read (lv_indev_t * indev_driver, lv_indev_data_t * data)
 
   bool touched = false;//tft.getTouch( &touchX, &touchY, 600 );
 
-  // touch points need to rotate 90 degrees
+  CST816S *touchA = (CST816S *)lv_indev_get_driver_data(indev_driver);
 
-  touchX = touch.data.x;
-  touchY = touch.data.y;
 
-  touched = touch.available();
+  touchX = touchA->data.x;
+  touchY = touchA->data.y;
 
-  if(!displayOn && touched){
-    displayOn = true;
-    // send command to the queue
-    commandFromGUI qdata;
-    qdata.command = 2;
-    xQueueSend(onDemandQueue, &qdata, 0);
-    touched = false;
-  }
+  touched = touchA->available();
+
+  // if(!displayOn && touched){
+  //   displayOn = true;
+  //   // send command to the queue
+  //   commandFromGUI qdata;
+  //   qdata.command = 2;
+  //   xQueueSend(onDemandQueue, &qdata, 0);
+  //   touched = false;
+  // }
 
   if (!touched)
   {
@@ -297,6 +284,8 @@ void GUITask(void *pvParameters){
   // set backlight LED pin as output
   pinMode(TFT_BL, OUTPUT);
 
+  bool isDisplayOn = true;
+
   // initialize TFT
   tft.init();          /* TFT init */
   tft.setRotation(3); /* Landscape orientation, flipped */
@@ -306,7 +295,7 @@ void GUITask(void *pvParameters){
   lv_init();
 
   /*Set a tick source so that LVGL will know how much time elapsed. */
-  lv_tick_set_cb(my_tick_get_cb);
+  // lv_tick_set_cb(my_tick_get_cb);
 
   #if LV_USE_LOG != 0
       lv_log_register_print_cb( my_print ); /* register print function for debugging */
@@ -320,16 +309,27 @@ void GUITask(void *pvParameters){
   lv_display_set_buffers( disp, buf, NULL, SCREENBUFFER_SIZE_PIXELS * sizeof(lv_color_t), LV_DISPLAY_RENDER_MODE_PARTIAL);
   lv_display_set_flush_cb( disp, my_disp_flush );
   // lv_display_set_buffers(disp, disp_draw_buf, NULL, bufSize * 2, LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_driver_data( disp, &tft );
 
   static lv_indev_t* indev;
   indev = lv_indev_create();
   lv_indev_set_type( indev, LV_INDEV_TYPE_POINTER );
   lv_indev_set_read_cb( indev, my_touchpad_read );
+  lv_indev_set_driver_data( indev, &touch );
 
   //Dim the TFT backlight
   analogWrite(TFT_BL, 255/2); // values go from 0 to 255,
 
   ui_init();
+
+  // Tick interface for LVGL
+  const esp_timer_create_args_t periodic_timer_args = {
+    .callback = increase_lvgl_tick,
+    .name = "periodic_gui"
+  };
+  esp_timer_handle_t periodic_timer;
+  esp_timer_create(&periodic_timer_args, &periodic_timer);
+  esp_timer_start_periodic(periodic_timer, portTICK_PERIOD_MS * 1000);
 
 #ifdef ENABLE_LOGGING
   Serial.println();
@@ -349,7 +349,7 @@ void GUITask(void *pvParameters){
 
   guiCommandQueue qdata;
 
-  xTaskCreatePinnedToCore(GUIUpdateTask, "GUIUpdateTask", 28096, NULL, 3, NULL, 1);
+  xTaskCreatePinnedToCore(GUIUpdateTask, "GUIUpdateTask", 38096, NULL, 3, NULL, 1);
 
 #ifdef ENABLE_LOGGING
   Serial.println("Setup done");
@@ -384,7 +384,6 @@ void GUITask(void *pvParameters){
       Serial.println("Gyroscope self-test failed!");
   }
 
-
   qmi.configAccelerometer(
       /*
       * ACC_RANGE_2G
@@ -414,9 +413,6 @@ void GUITask(void *pvParameters){
       *  LPF_OFF        // OFF Low-Pass Fitter
       * */
       SensorQMI8658::LPF_MODE_0);
-
-
-
 
   qmi.configGyroscope(
       /*
@@ -450,9 +446,6 @@ void GUITask(void *pvParameters){
       * */
       SensorQMI8658::LPF_MODE_3);
 
-
-
-
   /*
   * If both the accelerometer and gyroscope sensors are turned on at the same time,
   * the output frequency will be based on the gyroscope output frequency.
@@ -464,8 +457,6 @@ void GUITask(void *pvParameters){
 
   // Print register configuration information
   qmi.dumpCtrlRegister();
-
-
 
   #if IMU_INT1 > 0
   // If you want to enable interrupts, then turn on the interrupt enable
@@ -495,6 +486,7 @@ void GUITask(void *pvParameters){
           }
           break;
         case 1:
+        {
           switch(qdata.homeScreen.command){
             case 0:
               char time[10];
@@ -522,7 +514,7 @@ void GUITask(void *pvParameters){
               // lv_label_set_text(ui_tempLbl, tempStr);
 
               // set the battery level
-              lv_bar_set_value(ui_Bar1, qdata.homeScreen.batteryLvl, LV_ANIM_OFF);
+              lv_label_set_text(ui_Label6, qdata.homeScreen.batteryLvl.c_str());
               break;
             case 1:
               // set the crypto rate
@@ -531,17 +523,24 @@ void GUITask(void *pvParameters){
               // set the percent change 24h
               if(qdata.homeScreen.is_percent_change_24h_negative){
                 lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+                lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
                 lv_image_set_src(ui_arrowImg, &ui_img_down_triangle_png);
+                lv_obj_set_y(ui_cryptoPercentageLbl, -10);
+                lv_obj_set_y(ui_arrowImg, 6);
               }else{
                 lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
+                lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
                 lv_image_set_src(ui_arrowImg, &ui_img_up_triangle_png);
+                lv_obj_set_y(ui_cryptoPercentageLbl, 6);
+                lv_obj_set_y(ui_arrowImg, -10);
               }
               lv_label_set_text(ui_cryptoPercentageLbl, qdata.homeScreen.percent_change_24h.c_str());
               break;
           }
           break;
-
+        }
         case 3:
+        {
           switch(qdata.wifiScreen.command){
             case 0:
               lv_label_set_text(ui_Label4, qdata.wifiScreen.text);
@@ -560,17 +559,21 @@ void GUITask(void *pvParameters){
               break;
           }
           break; 
+        }
         case 4:
+        {
           setOndemardWifi = qdata.setOndemardWifi;
           break; 
+        }
+        case 6:
+        { // turn off the display
+          analogWrite(TFT_BL, 0);
+          isDisplayOn = false;
 
-        case 5:
-          // get the current slider value
-          uint8_t value = lv_slider_get_value(ui_brightnessSlider);
-          uint8_t brightness = (uint8_t)(value * 255 / 100);
-          if(brightness < 30) brightness = 30;
-          analogWrite(TFT_BL, brightness);
+          // disable the lv_indev
+          //lv_indev_enable(indev, false);
           break;
+        }
           
       }
     }
@@ -592,42 +595,72 @@ void GUITask(void *pvParameters){
       data.cancelOnDemandWifi = 1;
       xQueueSend(onDemandQueue, &data, 0);
     }
-    lv_timer_handler(); /* let the GUI do its work */
+    
+    if(!isDisplayOn){
+      //read the touch data
+      if(touch.available()){
+        // turn on the display
+        isDisplayOn = true;
 
-    // read IMU data when display is off
-    if (!displayOn && qmi.getDataReady() ) {
-
-        if (qmi.getAccelerometer(acc.x, acc.y, acc.z)) {
-
-#ifdef ENABLE_LOGGING
-            // Print to serial plotter
-            Serial.print("ACCEL.x:"); Serial.print(acc.x); Serial.print("  ,  ");
-            Serial.print("ACCEL.y:"); Serial.print(acc.y); Serial.print("  ,  ");
-            Serial.print("ACCEL.z:"); Serial.print(acc.z); Serial.println();
-#endif
-            // turn on display if readings are on this range
-            // x - 0.00-(-0.01), y - 0.40-0.6, z - (-0.7)-(-0.9)
-            if(acc.x>-0.01 && acc.x<0.20 && acc.y>0.40 && acc.y<0.8 && acc.z>-0.9 && acc.z<-0.7 && !displayOn){
-              displayOn = true;
-              // send command to the queue
-              commandFromGUI qdata;
-              qdata.command = 2;
-              xQueueSend(onDemandQueue, &qdata, 0);
-
-              // read temperature
-              float temp = qmi.getTemperature_C();
-              // set the temperature
-              char tempStr[10];
-              sprintf(tempStr, "%d°", (int)temp);
-              lv_label_set_text(ui_tempLbl, tempStr);
-              
-            }
-
-        }
-
+        // enable the lv_indev
+        //lv_indev_enable(indev, true);
+        
+        // get the current slider value
+        uint8_t value = lv_slider_get_value(ui_brightnessSlider);
+        uint8_t brightness = (uint8_t)(value * 255 / 100);
+        if(brightness < 30) brightness = 30;
+        analogWrite(TFT_BL, brightness);
+        
+        // send command to the queue
+        commandFromGUI qdata;
+        qdata.command = 2;
+        xQueueSend(onDemandQueue, &qdata, 0);
+      }
     }
-
-    delay(5);
+    
+    // read IMU data when display is off
+    if (!isDisplayOn && qmi.getDataReady() ) {
+      
+      if (qmi.getAccelerometer(acc.x, acc.y, acc.z)) {
+        
+        #ifdef ENABLE_LOGGING
+        // Print to serial plotter
+        Serial.print("ACCEL.x:"); Serial.print(acc.x); Serial.print("  ,  ");
+        Serial.print("ACCEL.y:"); Serial.print(acc.y); Serial.print("  ,  ");
+        Serial.print("ACCEL.z:"); Serial.print(acc.z); Serial.println();
+        #endif
+        // turn on display if readings are on this range
+        // x - 0.00-(-0.01), y - 0.40-0.6, z - (-0.7)-(-0.9)
+        if(acc.x>-0.01 && acc.x<0.20 && acc.y>0.40 && acc.y<0.8 && acc.z>-0.9 && acc.z<-0.7 && !isDisplayOn){
+          isDisplayOn = true;
+          
+          // enable the lv_indev
+          //lv_indev_enable(indev, true);
+          
+          // get the current slider value
+          uint8_t value = lv_slider_get_value(ui_brightnessSlider);
+          uint8_t brightness = (uint8_t)(value * 255 / 100);
+          if(brightness < 30) brightness = 30;
+          analogWrite(TFT_BL, brightness);  
+          
+          // send command to the queue
+          commandFromGUI qdata;
+          qdata.command = 2;
+          xQueueSend(onDemandQueue, &qdata, 0);
+          
+          // read temperature
+          float temp = qmi.getTemperature_C();
+          // set the temperature
+          char tempStr[10];
+          sprintf(tempStr, "%d°C", (int)temp);
+          lv_label_set_text(ui_tempLbl, tempStr);
+          
+        }
+      }
+    }
+    
+    lv_timer_handler(); /* let the GUI do its work */
+    vTaskDelay(pdMS_TO_TICKS(5));
   }
 }
 
@@ -640,6 +673,30 @@ void GUIUpdateTask(void *pvParameters){
   WiFiClientSecure *client;
   //create an HTTPClient instance
   HTTPClient https;
+  bool restartDisplayTimer = false;
+  bool displayOn = true;
+  esp_timer_handle_t display_on_timer = nullptr;
+  // once the timer expires, the display will be turned off
+  const esp_timer_create_args_t display_on_timer_args = {
+    .callback = [](void *arg) { 
+      // change to home screen
+      guiCommandQueue qdata;
+      qdata.command = 0;
+      qdata.screen = 1;
+      qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_LEFT;
+      xQueueSend(commandQueue, &qdata, 0);
+
+      // send turn off display command to the queue
+      qdata.command = 6;
+      xQueueSend(commandQueue, &qdata, 0);
+
+      // send command to the queue
+      commandFromGUI qdata1;
+      qdata1.command = 3;
+      xQueueSend(onDemandQueue, &qdata1, 0);
+    },
+    .name = "display_on_timer"
+  };
 
   // check if the wifi is connected
   if (WiFi.status() != WL_CONNECTED) {
@@ -816,10 +873,12 @@ void GUIUpdateTask(void *pvParameters){
           xQueueSend(commandQueue, &qdata, 0);
 
           // stop the display timer
-          ESP_ERROR_CHECK(esp_timer_stop(display_on_timer));
+          if(esp_timer_is_active(display_on_timer)){
+            ESP_ERROR_CHECK(esp_timer_stop(display_on_timer));
+          }
 
           // create a task for on demand wifi
-          xTaskCreatePinnedToCore(OndemandWiFiTask, "OndemandWiFiTask", 8096, NULL, 3, &handleOnDemand, 0);
+          xTaskCreatePinnedToCore(OndemandWiFiTask, "OndemandWiFiTask", 10096, NULL, 3, &handleOnDemand, 0);
           break;
         
         case 1:
@@ -837,8 +896,13 @@ void GUIUpdateTask(void *pvParameters){
           break;
         
         case 2:
+          displayOn = true;
           restartDisplayTimer = true;
           break;
+        
+        case 3:
+          displayOn = false;
+        break;
       }
     }
     
@@ -867,9 +931,13 @@ void GUIUpdateTask(void *pvParameters){
       // qdata.homeScreen.temp = 30;
       // read the battery level
       int Volts = analogReadMilliVolts(BAT_VOLTAGE_PIN);
-      qdata.homeScreen.batteryLvl = (Volts * 3.0 / 1000.0) / Measurement_offset;
+      // battery level = (Volts * 3.0 / 1000.0) / Measurement_offset;
+      // map the battery level to 0-100, which ranges from 3.0V to 4.2V
+      qdata.homeScreen.batteryLvl = String(map(Volts, 3000, 4200, 0, 100));
+
 #ifdef ENABLE_LOGGING
-      Serial.printf("Battery Level: %d\n", qdata.homeScreen.batteryLvl);
+      Serial.print("Battery Level: ");
+      Serial.println(qdata.homeScreen.batteryLvl);
 #endif   
       qdata.command = 1;
       qdata.homeScreen.command = 0;
@@ -878,6 +946,7 @@ void GUIUpdateTask(void *pvParameters){
 
     if((millis() - lastTimeCrypto > intervalCrypto) && displayOn){
       lastTimeCrypto = millis();
+      Serial.println("Updating Crypto Rate");
       // read the crypto rate
       // read the crypto rate from API
       if(client) {
@@ -942,9 +1011,9 @@ void GUIUpdateTask(void *pvParameters){
 
                 if(percent_change_24h >= 0){
                   qdata.homeScreen.is_percent_change_24h_negative = false;
-                  qdata.homeScreen.percent_change_24h = String(percent_change_24h, 2) + "%";
+                  qdata.homeScreen.percent_change_24h = String(percent_change_24h, 1) + "%";
                 }else{
-                  qdata.homeScreen.percent_change_24h = String(abs(percent_change_24h), 2) + "%";
+                  qdata.homeScreen.percent_change_24h = String(abs(percent_change_24h), 1) + "%";
                   qdata.homeScreen.is_percent_change_24h_negative = true;
                 }
             
@@ -981,7 +1050,7 @@ void GUIUpdateTask(void *pvParameters){
       xQueueSend(commandQueue, &qdata, 0);
     }
 
-    delay(500);
+    vTaskDelay(pdMS_TO_TICKS(500));
   }
 }
 
