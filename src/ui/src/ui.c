@@ -48,6 +48,8 @@ lv_obj_t * ui_Roller1;
 void ui_event_backBtn(lv_event_t * e);
 lv_obj_t * ui_backBtn;
 lv_obj_t * ui_Label3;
+void ui_event_Roller1(lv_event_t * e);
+bool newDisplayOnTime = true;
 // CUSTOM VARIABLES
 
 // SCREEN: ui_WifiScn
@@ -120,6 +122,15 @@ void ui_event_backBtn2(lv_event_t * e)
     if(event_code == LV_EVENT_CLICKED) {
         cancelWiFiCB(e);
         // _ui_screen_change(&ui_MenuScn, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 100, &ui_MenuScn_screen_init);
+    }
+}
+
+void ui_event_Roller1(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+
+    if(event_code == LV_EVENT_VALUE_CHANGED) {
+        displayOnTimeChanged(e);
     }
 }
 

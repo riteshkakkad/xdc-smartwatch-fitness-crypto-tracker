@@ -39,3 +39,8 @@ void cancelWiFiCB(lv_event_t * e)
 	cancelOnDemandWifi = true;
 	
 }
+
+void displayOnTimeChanged(lv_event_t * e)
+{
+	newDisplayOnTime = true;
+}

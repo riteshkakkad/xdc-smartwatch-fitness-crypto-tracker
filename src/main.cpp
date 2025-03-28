@@ -44,7 +44,7 @@ using namespace std;
 #define Measurement_offset 0.992857  
 
 // 10 seconds in us
-#define DISPLAY_ON_TIME 10000000
+uint64_t DISPLAY_ON_TIME = 10 * 1000000;
 
 // crypto API parameters
 const char*  server = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest?id=2634";
@@ -93,7 +93,18 @@ const int   daylightOffset_sec = 1;
 String ssid = "";
 String password = "";
 bool isInitialSetup = false;
+bool firstTImeStartDisplayTimeout = true;
 
+// Display timeout timer
+bool displayTimeout = false;
+bool canDisplayTurnOff = false;
+const esp_timer_create_args_t display_timeout_timer_args = {
+  .callback = [](void *arg) { 
+    displayTimeout = true;
+  },
+  .name = "display timeout timer"
+};
+esp_timer_handle_t dispay_timeout_timer;
 
 struct homeScreenCommand{
   uint8_t command; // 0 : time/date/battery/steps/temp, 1:cryptoRate
@@ -125,7 +136,7 @@ struct wifiScreenCommand{
 };
 
 struct guiCommand {
-  uint8_t command; // 0 - screen change, 1 - home screen, 2 - menu screen, 3 - wifi screen , 4 - restart control task
+  uint8_t command; // 0 - screen change, 1 - home screen, 2 - menu screen, 3 - wifi screen , 4 - set canDisplayTurnOff
   homeScreenCommand homeScreen;
   menuScreenCommand menuScreen;
   wifiScreenCommand wifiScreen;
@@ -230,15 +241,15 @@ void my_disp_flush( lv_display_t *disp, const lv_area_t *area, uint8_t *pixelmap
 /*Read the touchpad*/
 void my_touchpad_read (lv_indev_t * indev_driver, lv_indev_data_t * data)
 {
-  uint16_t touchX = 0, touchY = 0;
+  // uint16_t touchX = 0, touchY = 0;
 
   bool touched = false;//tft.getTouch( &touchX, &touchY, 600 );
 
   CST816S *touchA = (CST816S *)lv_indev_get_driver_data(indev_driver);
 
 
-  touchX = touchA->data.x;
-  touchY = touchA->data.y;
+  // touchX = touchA->data.x;
+  // touchY = touchA->data.y;
 
   touched = touchA->available();
 
@@ -248,11 +259,16 @@ void my_touchpad_read (lv_indev_t * indev_driver, lv_indev_data_t * data)
   }
   else
   { 
+    if(esp_timer_is_active(dispay_timeout_timer)){
+      esp_timer_stop(dispay_timeout_timer);
+    }
+    esp_timer_start_once(dispay_timeout_timer, DISPLAY_ON_TIME);
+    
     data->state = LV_INDEV_STATE_PR;
 
       /*Set the coordinates*/
-    data->point.x = 230 - touchY;
-    data->point.y = touchX ;
+    data->point.x = 230 - touchA->data.y;
+    data->point.y = touchA->data.x ;
   }
 }
 
@@ -262,11 +278,14 @@ void* allocate_psram(size_t size) {
 }
 
 void GUITask(void *pvParameters){
-
+  // for update the tempurature from the sensor
+  unsigned long currentTime = 0;
+  unsigned long previousTime = 0;
+  unsigned long tempUpdateInterval = 3000;
   // set backlight LED pin as output
   pinMode(TFT_BL, OUTPUT);
 
-  bool isDisplayOn = true;
+  bool displayHasTurnedOff = false;
 
   // initialize TFT
   tft.init();          /* TFT init */
@@ -303,15 +322,6 @@ void GUITask(void *pvParameters){
   analogWrite(TFT_BL, 255/2); // values go from 0 to 255,
 
   ui_init();
-
-  // // Tick interface for LVGL
-  // const esp_timer_create_args_t periodic_timer_args = {
-  //   .callback = increase_lvgl_tick,
-  //   .name = "periodic_gui"
-  // };
-  // esp_timer_handle_t periodic_timer;
-  // esp_timer_create(&periodic_timer_args, &periodic_timer);
-  // esp_timer_start_periodic(periodic_timer, portTICK_PERIOD_MS * 1000);
 
 #ifdef ENABLE_LOGGING
   Serial.println();
@@ -449,17 +459,91 @@ void GUITask(void *pvParameters){
   // create the control task
   xTaskCreatePinnedToCore(ControlTask, "ControlTask", 18096, NULL, 5, &controlTaskHandle, 1);
 
+  esp_timer_create(&display_timeout_timer_args, &dispay_timeout_timer);
+  
+  newDisplayOnTime = false;
+
   while(1){
     // take ui mutex
     xSemaphoreTake(xMutex, portMAX_DELAY);
+    // update the tempurature from the sensor
+    currentTime = millis();
+    if(currentTime - previousTime > tempUpdateInterval){
+      previousTime = currentTime;
+      float temp = qmi.getTemperature_C();
+      // set the temperature
+      char tempStr[10];
+      sprintf(tempStr, "%d°C", (int)temp);
+      lv_label_set_text(ui_tempLbl, tempStr);
+    }
+
     lv_timer_handler(); /* let the GUI do its work */
+
+    if(newDisplayOnTime){
+      newDisplayOnTime = false;
+      // print the slider value
+      uint32_t value =  lv_roller_get_selected(ui_Roller1);
+      Serial.printf("New display on time: %d\n", value);
+      switch(value){
+        case 0:
+          DISPLAY_ON_TIME = 10 * 1000000; // 10s
+          break;
+        case 1:
+          DISPLAY_ON_TIME = 30 * 1000000; // 30s
+          break;
+        case 2:
+          DISPLAY_ON_TIME = 60 * 1000000; // 1min
+          break;
+        case 3:
+          DISPLAY_ON_TIME = 300 * 1000000; // 5min
+          break;
+        default:
+          break;
+      }
+
+      canDisplayTurnOff = true;
+
+    }
+
+    if(canDisplayTurnOff){
+      canDisplayTurnOff = false;
+      Serial.println("Display timer started");
+      if(esp_timer_is_active(dispay_timeout_timer)){
+        esp_timer_stop(dispay_timeout_timer);
+      }
+      // start timer for 10s
+      esp_timer_start_once(dispay_timeout_timer, DISPLAY_ON_TIME);
+    }
+
+    if(displayTimeout){
+      Serial.println("Display timeout");
+      displayTimeout = false;
+      analogWrite(TFT_BL, 0);
+      _ui_screen_change(&ui_HomeScn, LV_SCR_LOAD_ANIM_MOVE_LEFT, 500, 0, &ui_HomeScn_screen_init);
+      displayHasTurnedOff = true;
+    }
+
+    if(displayHasTurnedOff){
+      qmi.getAccelerometer(acc.x, acc.y, acc.z);
+      if(touch.available() || (acc.x>-0.01 && acc.x<0.20 && acc.y>0.40 && acc.y<0.8 && acc.z>-0.9 && acc.z<-0.7)){
+        displayHasTurnedOff = false;
+        uint32_t brightness = lv_slider_get_value(ui_brightnessSlider);
+        // convert that value to 0-255 range
+        brightness =	(brightness * 255 / 100);
+        
+        if(brightness < 30) brightness = 30;
+        analogWrite(TFT_BL,  brightness);
+
+        canDisplayTurnOff = true;
+      }
+    }
 
     // check if on demand wifi is set
     if(setOndemardWifi){
       // stop the control task
       vTaskDelete(controlTaskHandle);
       setOndemardWifi = false;
-      // delete the control task
+      canDisplayTurnOff = false;
 
       // set the arc value to 100
       lv_arc_set_value(ui_wifiTimerArc, 100);
@@ -487,6 +571,7 @@ void GUITask(void *pvParameters){
         vTaskDelete(handleOnDemand);
       }
       cancelOnDemandWifi = false;
+      canDisplayTurnOff = true;
 
       // change the screen to home screen
       _ui_screen_change(&ui_MenuScn, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 0, &ui_MenuScn_screen_init);
@@ -553,12 +638,13 @@ void onDemandWiFiTask(void *pvParameters){
     command.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
     commands.commands.push_back(command);
 
-    // send command to restart the control task
-    command.command = 4;
-    commands.commands.push_back(command);
+    // // set canDisplayTurnOff to true
+    // command.command = 4;
+    // commands.commands.push_back(command);
 
     // create the GUI control task
     xTaskCreatePinnedToCore(GUIControlTask, "GUIControlTask", 4096, &commands, 5, NULL, 0);
+
 
   }else{
     // WiFi turn off
@@ -601,6 +687,10 @@ void onDemandWiFiTask(void *pvParameters){
     command.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
     commands.commands.push_back(command);
 
+    //  // set canDisplayTurnOff to true
+    //  command.command = 4;
+    //  commands.commands.push_back(command);
+
     // create the GUI control task
     xTaskCreatePinnedToCore(GUIControlTask, "GUIControlTask", 4096, &commands, 5, NULL, 0);
   }
@@ -627,6 +717,7 @@ void GUIControlTask(void *pvParameters){
      // update the time, ampmLbl and dateLbl on the screen
      switch(command.command){
       case 0:
+      {
         switch(command.screen){
           case 1:
             _ui_screen_change(&ui_HomeScn, command.moveDir, 500, 0, &ui_HomeScn_screen_init);
@@ -639,6 +730,7 @@ void GUIControlTask(void *pvParameters){
             break;
         }
         break;
+      }
       case 1:
       {
         switch(command.homeScreen.command){
@@ -693,6 +785,11 @@ void GUIControlTask(void *pvParameters){
         }
         break;
       }
+      case 2:
+      {
+        canDisplayTurnOff = true;
+        break;
+      }
       case 3:
       {
         switch(command.wifiScreen.command){
@@ -714,14 +811,7 @@ void GUIControlTask(void *pvParameters){
         }
         break; 
       }
-      case 4:
-      {
-        // delete the on demand wifi task
-        // vTaskDelete(handleOnDemand);
-        // create the control task
-        xTaskCreatePinnedToCore(ControlTask, "ControlTask", 18096, NULL, 5, &controlTaskHandle, 1);
-        break; 
-      }
+      
     }
   
   } 
@@ -891,7 +981,7 @@ void ControlTask(void *pvParameters){
       command.homeScreen.day = tm->tm_mday;
       command.homeScreen.month = tm->tm_mon + 1;
       command.homeScreen.weekday = tm->tm_wday;
-      command.homeScreen.ampm = tm->tm_hour > 12 ? 1 : 0;
+      command.homeScreen.ampm = tm->tm_hour > 12 ? 0 : 1;
       command.homeScreen.hour = command.homeScreen.hour % 12;
       if(command.homeScreen.hour == 0){
         command.homeScreen.hour = 12;
@@ -998,7 +1088,27 @@ void ControlTask(void *pvParameters){
 #ifdef ENABLE_LOGGING
                 Serial.printf("Crypto Rate: %f\n", price);
 #endif
-                command.homeScreen.cryptoRate = String(price, 5);
+                // price = price * 1000;
+                // if crypto rate is in 0-9 range, set decimal points to 6
+                if(price >= 0 && price < 10){
+                  command.homeScreen.cryptoRate = String(price, 6);
+                }else if(price >= 10 && price < 100){
+                  command.homeScreen.cryptoRate = String(price, 5);
+                }else if(price >= 100 && price < 1000){
+                  command.homeScreen.cryptoRate = String(price, 4);
+                }else if(price >= 1000 && price < 10000){
+                  command.homeScreen.cryptoRate = String(price, 3);
+                }else if(price >= 10000 && price < 100000){
+                  command.homeScreen.cryptoRate = String(price, 2);
+                }else if(price >= 100000 && price < 1000000){
+                  command.homeScreen.cryptoRate = String(price, 1);
+                }else if(price >= 1000000){
+                  command.homeScreen.cryptoRate = String(price, 0);
+                }
+
+                // add '$' to the crypto rate
+                command.homeScreen.cryptoRate = command.homeScreen.cryptoRate + "$" ;
+
                 // percent_change_24h = "5.5%" remove the negativiy mark of the percent_change_24h
 
                 if(percent_change_24h >= 0){
@@ -1028,6 +1138,13 @@ void ControlTask(void *pvParameters){
       command.homeScreen.command = 1;
       
       commands.commands.push_back(command);
+
+      if(firstTImeStartDisplayTimeout){
+        firstTImeStartDisplayTimeout = false;
+        // start the display timeout timer
+        command.command = 2;
+        commands.commands.push_back(command);
+      }
 
       // create the GUI control task
       xTaskCreatePinnedToCore(GUIControlTask, "GUIControlTask", 4096, &commands, 5, NULL, 0);

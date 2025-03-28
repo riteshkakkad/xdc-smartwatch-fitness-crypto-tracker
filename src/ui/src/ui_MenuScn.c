@@ -127,5 +127,5 @@ void ui_MenuScn_screen_init(void)
     lv_obj_add_event_cb(ui_brightnessSlider, ui_event_brightnessSlider, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_addNewWiFibtn, ui_event_addNewWiFibtn, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_backBtn, ui_event_backBtn, LV_EVENT_ALL, NULL);
-
+    lv_obj_add_event_cb(ui_Roller1, ui_event_Roller1, LV_EVENT_ALL, NULL);
 }

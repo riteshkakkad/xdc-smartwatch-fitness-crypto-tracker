@@ -14,6 +14,7 @@ void brightnessChangecallback(lv_event_t * e);
 void addNewWiFicallback(lv_event_t * e);
 void backToHomeCB(lv_event_t * e);
 void cancelWiFiCB(lv_event_t * e);
+void displayOnTimeChanged(lv_event_t * e);
 
 #ifdef __cplusplus
 } /*extern "C"*/
