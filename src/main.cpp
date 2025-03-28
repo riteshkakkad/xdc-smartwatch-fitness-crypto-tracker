@@ -15,6 +15,9 @@
 #include <HTTPClient.h>
 #include "ArduinoJson.h"
 #include "SensorQMI8658.hpp"
+#include <vector>
+
+using namespace std;
 
 #define ENABLE_LOGGING 1
 
@@ -67,14 +70,12 @@ const char* test_root_ca= \
 "5MsI+yMRQ+hDKXJioaldXgjUkK642M4UwtBV8ob2xJNDd2ZhwLnoQdeXeGADbkpy\n" \
 "rqXRfboQnoZsG4q5WTP468SQvvG5\n" \
 "-----END CERTIFICATE-----\n";
-uint32_t lastTimeCrypto = 0;
-uint32_t intervalCrypto = 10000;
 
 static const uint16_t screenWidth  = 240;
 static const uint16_t screenHeight = 240;
 
 #define SCREEN_BUFFER_SIZE (240 * 240)  
-enum { SCREENBUFFER_SIZE_PIXELS = screenWidth * screenHeight /10 };
+enum { SCREENBUFFER_SIZE_PIXELS = screenWidth * screenHeight /5 };
 static lv_color_t buf [SCREENBUFFER_SIZE_PIXELS];
 
 TFT_eSPI tft = TFT_eSPI(screenWidth, screenHeight);
@@ -87,31 +88,12 @@ IMUdata gyr;
 const char* ntpServer = "pool.ntp.org";
 const long  gmtOffset_sec = 19800;
 const int   daylightOffset_sec = 1;
-int timeupdateInterval = 1000;
-uint8_t lastTimeUpdate = 0;
 
-// parameters for on demand wifi
-unsigned int  timeout   = 120; // seconds to run for
-unsigned int  startTime = millis();
-bool portalRunning      = false;
-bool startAP            = true;
-int arcUpdateInterval   = 1200;
-int lastArcUpdate       = 0; 
-uint8_t arcValue       = 0;
-bool deviceConnected   = false;
-uint32_t stepCount      = 0;
-uint32_t vector         = 0;
-uint32_t lastvector     = 0;
-uint32_t totalvecor     = 0;
+// wifi credentials
+String ssid = "";
+String password = "";
+bool isInitialSetup = false;
 
-#if LV_USE_LOG != 0
-/* Serial debugging */
-void my_print(lv_log_level_t level, const char * buf)
-{
-    Serial.printf(buf);
-    Serial.flush();
-}
-#endif
 
 struct homeScreenCommand{
   uint8_t command; // 0 : time/date/battery/steps/temp, 1:cryptoRate
@@ -142,8 +124,8 @@ struct wifiScreenCommand{
   lv_color_t arcColor;
 };
 
-struct guiCommandQueue {
-  uint8_t command; // 0 - screen change, 1 - home screen, 2 - menu screen, 3 - wifi screen , 4 - onDemand, 5 - turn on display, 6 - turn off display
+struct guiCommand {
+  uint8_t command; // 0 - screen change, 1 - home screen, 2 - menu screen, 3 - wifi screen , 4 - restart control task
   homeScreenCommand homeScreen;
   menuScreenCommand menuScreen;
   wifiScreenCommand wifiScreen;
@@ -152,24 +134,34 @@ struct guiCommandQueue {
   uint8_t setOndemardWifi;
 };
 
-struct commandFromGUI{
-  uint8_t command; // 0 - set wifi on demand, 1 - cancel wifi on demand, 2 - display touched, 3 - display off timer expired
-  uint8_t setOndemardWifi;
-  uint8_t cancelOnDemandWifi;
+struct commandArray{
+  std::vector <guiCommand> commands;
+  uint8_t size;
 };
 
-QueueHandle_t commandQueue;
-QueueHandle_t onDemandQueue;
+#if LV_USE_LOG != 0
+/* Serial debugging */
+void my_print(lv_log_level_t level, const char * buf)
+{
+    Serial.printf(buf);
+    Serial.flush();
+}
+#endif
+
+// UI Mutex
+SemaphoreHandle_t xMutex;
 
 // task handlers
 TaskHandle_t handleOnDemand;
+TaskHandle_t controlTaskHandle;
 
 void* allocate_psram(size_t size);
 void my_disp_flush (lv_display_t *disp, const lv_area_t *area, uint8_t *pixelmap);
 static uint32_t my_tick_get_cb (void);
 void GUITask(void *pvParameters);
-void GUIUpdateTask(void *pvParameters);
-void OndemandWiFiTask(void *pvParameters);
+void GUIControlTask(void *pvParameters);
+void ControlTask(void *pvParameters);
+void onDemandWiFiTask(void *pvParameters);
 void my_touchpad_read (lv_indev_t * indev_driver, lv_indev_data_t * data);
 
 static void increase_lvgl_tick(void* arg) {
@@ -192,15 +184,19 @@ void setup()
   Serial.print("PSRAM free size: ");
   Serial.println(ESP.getFreePsram());
 #endif
+
+  // TODO: check later
+  // // turn off the Bluetooth
+  // btStop();
+
   //set the resolution to 12 bits (0-4095)
   analogReadResolution(12);
 
-  // initialize the command queue
-  commandQueue = xQueueCreate(15, sizeof(guiCommandQueue));
-  onDemandQueue = xQueueCreate(15, sizeof(commandFromGUI));
+  // initialize the UI mutex
+  xMutex = xSemaphoreCreateMutex();
 
   // create GUI task runs in code 0 
-  xTaskCreatePinnedToCore(GUITask, "GUITask", 18096, NULL, 3, NULL, 0);
+  xTaskCreatePinnedToCore(GUITask, "GUITask", 28096, NULL, 3, NULL, 0);
   // delay(500);
   // xTaskCreatePinnedToCore(GUIUpdateTask, "GUIUpdateTask", 8096, NULL, 3, NULL, 1);
 }
@@ -246,15 +242,6 @@ void my_touchpad_read (lv_indev_t * indev_driver, lv_indev_data_t * data)
 
   touched = touchA->available();
 
-  // if(!displayOn && touched){
-  //   displayOn = true;
-  //   // send command to the queue
-  //   commandFromGUI qdata;
-  //   qdata.command = 2;
-  //   xQueueSend(onDemandQueue, &qdata, 0);
-  //   touched = false;
-  // }
-
   if (!touched)
   {
       data->state = LV_INDEV_STATE_REL;
@@ -266,12 +253,6 @@ void my_touchpad_read (lv_indev_t * indev_driver, lv_indev_data_t * data)
       /*Set the coordinates*/
     data->point.x = 230 - touchY;
     data->point.y = touchX ;
-
-    // Serial.print( "Data x " );
-    // Serial.println(touchX);
-
-    // Serial.print( "Data y " );
-    // Serial.println( touchY );
   }
 }
 
@@ -281,6 +262,7 @@ void* allocate_psram(size_t size) {
 }
 
 void GUITask(void *pvParameters){
+
   // set backlight LED pin as output
   pinMode(TFT_BL, OUTPUT);
 
@@ -295,7 +277,7 @@ void GUITask(void *pvParameters){
   lv_init();
 
   /*Set a tick source so that LVGL will know how much time elapsed. */
-  // lv_tick_set_cb(my_tick_get_cb);
+  lv_tick_set_cb(my_tick_get_cb);
 
   #if LV_USE_LOG != 0
       lv_log_register_print_cb( my_print ); /* register print function for debugging */
@@ -322,14 +304,14 @@ void GUITask(void *pvParameters){
 
   ui_init();
 
-  // Tick interface for LVGL
-  const esp_timer_create_args_t periodic_timer_args = {
-    .callback = increase_lvgl_tick,
-    .name = "periodic_gui"
-  };
-  esp_timer_handle_t periodic_timer;
-  esp_timer_create(&periodic_timer_args, &periodic_timer);
-  esp_timer_start_periodic(periodic_timer, portTICK_PERIOD_MS * 1000);
+  // // Tick interface for LVGL
+  // const esp_timer_create_args_t periodic_timer_args = {
+  //   .callback = increase_lvgl_tick,
+  //   .name = "periodic_gui"
+  // };
+  // esp_timer_handle_t periodic_timer;
+  // esp_timer_create(&periodic_timer_args, &periodic_timer);
+  // esp_timer_start_periodic(periodic_timer, portTICK_PERIOD_MS * 1000);
 
 #ifdef ENABLE_LOGGING
   Serial.println();
@@ -346,10 +328,6 @@ void GUITask(void *pvParameters){
   Serial.print("PSRAM free size: ");
   Serial.println(ESP.getFreePsram());
 #endif
-
-  guiCommandQueue qdata;
-
-  xTaskCreatePinnedToCore(GUIUpdateTask, "GUIUpdateTask", 38096, NULL, 3, NULL, 1);
 
 #ifdef ENABLE_LOGGING
   Serial.println("Setup done");
@@ -468,315 +446,386 @@ void GUITask(void *pvParameters){
   Serial.println("Read data now...");
 #endif
 
+  // create the control task
+  xTaskCreatePinnedToCore(ControlTask, "ControlTask", 18096, NULL, 5, &controlTaskHandle, 1);
+
   while(1){
-    if(xQueueReceive(commandQueue, &qdata, 0) == pdTRUE){
-      // update the time, ampmLbl and dateLbl on the screen
-      switch(qdata.command){
-        case 0:
-          switch(qdata.screen){
-            case 1:
-              _ui_screen_change(&ui_HomeScn, qdata.moveDir, 500, 0, &ui_HomeScn_screen_init);
-              break;
-            case 2:
-              _ui_screen_change(&ui_MenuScn, qdata.moveDir, 500, 0, &ui_MenuScn_screen_init);
-              break;
-            case 3:
-              _ui_screen_change(&ui_WifiScn, qdata.moveDir, 500, 0, &ui_WifiScn_screen_init);
-              break;
-          }
-          break;
-        case 1:
-        {
-          switch(qdata.homeScreen.command){
-            case 0:
-              char time[10];
-              sprintf(time, "%02d:%02d", qdata.homeScreen.hour, qdata.homeScreen.minute);
-              lv_label_set_text(ui_timeLbl, time);
-              if(qdata.homeScreen.ampm){
-                lv_label_set_text(ui_ampmLbl, "PM");
-              }else{
-                lv_label_set_text(ui_ampmLbl, "AM");
-              }
-        
-              // date - month-date Weekday
-              char dateStr[15];
-              sprintf(dateStr, "%02d-%02d %s", qdata.homeScreen.month, qdata.homeScreen.day, (qdata.homeScreen.weekday == 0) ? "SUN" : (qdata.homeScreen.weekday == 1) ? "MON" : (qdata.homeScreen.weekday == 2) ? "TUE" : (qdata.homeScreen.weekday == 3) ? "WED" : (qdata.homeScreen.weekday == 4) ? "THU" : (qdata.homeScreen.weekday == 5) ? "FRI" : "SAT");
-              lv_label_set_text(ui_dateLbl, dateStr);
-
-              // set the step count
-              char stepCountStr[10];
-              sprintf(stepCountStr, "%d", qdata.homeScreen.stepCount);
-              lv_label_set_text(ui_stepCountLbl, stepCountStr);
-
-              // // set the temperature
-              // char tempStr[10];
-              // sprintf(tempStr, "%d°", qdata.homeScreen.temp);
-              // lv_label_set_text(ui_tempLbl, tempStr);
-
-              // set the battery level
-              lv_label_set_text(ui_Label6, qdata.homeScreen.batteryLvl.c_str());
-              break;
-            case 1:
-              // set the crypto rate
-              lv_label_set_text(ui_cryptoRateLbl, qdata.homeScreen.cryptoRate.c_str());
-
-              // set the percent change 24h
-              if(qdata.homeScreen.is_percent_change_24h_negative){
-                lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
-                lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
-                lv_image_set_src(ui_arrowImg, &ui_img_down_triangle_png);
-                lv_obj_set_y(ui_cryptoPercentageLbl, -10);
-                lv_obj_set_y(ui_arrowImg, 6);
-              }else{
-                lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
-                lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
-                lv_image_set_src(ui_arrowImg, &ui_img_up_triangle_png);
-                lv_obj_set_y(ui_cryptoPercentageLbl, 6);
-                lv_obj_set_y(ui_arrowImg, -10);
-              }
-              lv_label_set_text(ui_cryptoPercentageLbl, qdata.homeScreen.percent_change_24h.c_str());
-              break;
-          }
-          break;
-        }
-        case 3:
-        {
-          switch(qdata.wifiScreen.command){
-            case 0:
-              lv_label_set_text(ui_Label4, qdata.wifiScreen.text);
-              lv_obj_set_style_text_color(ui_Label4, qdata.wifiScreen.textColor, LV_PART_MAIN | LV_STATE_DEFAULT);
-              break;
-            case 1:
-              lv_arc_set_value(ui_wifiTimerArc, qdata.wifiScreen.arcValue);
-              lv_obj_set_style_arc_color(ui_wifiTimerArc, qdata.wifiScreen.arcColor , LV_PART_INDICATOR | LV_STATE_DEFAULT);
-              break;
-            case 2:
-              if(qdata.wifiScreen.hideCancelBtn){
-                lv_obj_add_flag(ui_backBtn2, LV_OBJ_FLAG_HIDDEN);
-              }else{
-                lv_obj_remove_flag(ui_backBtn2, LV_OBJ_FLAG_HIDDEN);
-              }
-              break;
-          }
-          break; 
-        }
-        case 4:
-        {
-          setOndemardWifi = qdata.setOndemardWifi;
-          break; 
-        }
-        case 6:
-        { // turn off the display
-          analogWrite(TFT_BL, 0);
-          isDisplayOn = false;
-
-          // disable the lv_indev
-          //lv_indev_enable(indev, false);
-          break;
-        }
-          
-      }
-    }
-
-    if(setOndemardWifi){
-      setOndemardWifi = false;
-      // send onDemandQueue 
-      commandFromGUI data;
-      data.command = 0;
-      data.setOndemardWifi = 1;
-      xQueueSend(onDemandQueue, &data, 0);
-    }
-
-    if(cancelOnDemandWifi){
-      cancelOnDemandWifi = false;
-      // send onDemandQueue 
-      commandFromGUI data;
-      data.command = 1;
-      data.cancelOnDemandWifi = 1;
-      xQueueSend(onDemandQueue, &data, 0);
-    }
-    
-    if(!isDisplayOn){
-      //read the touch data
-      if(touch.available()){
-        // turn on the display
-        isDisplayOn = true;
-
-        // enable the lv_indev
-        //lv_indev_enable(indev, true);
-        
-        // get the current slider value
-        uint8_t value = lv_slider_get_value(ui_brightnessSlider);
-        uint8_t brightness = (uint8_t)(value * 255 / 100);
-        if(brightness < 30) brightness = 30;
-        analogWrite(TFT_BL, brightness);
-        
-        // send command to the queue
-        commandFromGUI qdata;
-        qdata.command = 2;
-        xQueueSend(onDemandQueue, &qdata, 0);
-      }
-    }
-    
-    // read IMU data when display is off
-    if (!isDisplayOn && qmi.getDataReady() ) {
-      
-      if (qmi.getAccelerometer(acc.x, acc.y, acc.z)) {
-        
-        #ifdef ENABLE_LOGGING
-        // Print to serial plotter
-        Serial.print("ACCEL.x:"); Serial.print(acc.x); Serial.print("  ,  ");
-        Serial.print("ACCEL.y:"); Serial.print(acc.y); Serial.print("  ,  ");
-        Serial.print("ACCEL.z:"); Serial.print(acc.z); Serial.println();
-        #endif
-        // turn on display if readings are on this range
-        // x - 0.00-(-0.01), y - 0.40-0.6, z - (-0.7)-(-0.9)
-        if(acc.x>-0.01 && acc.x<0.20 && acc.y>0.40 && acc.y<0.8 && acc.z>-0.9 && acc.z<-0.7 && !isDisplayOn){
-          isDisplayOn = true;
-          
-          // enable the lv_indev
-          //lv_indev_enable(indev, true);
-          
-          // get the current slider value
-          uint8_t value = lv_slider_get_value(ui_brightnessSlider);
-          uint8_t brightness = (uint8_t)(value * 255 / 100);
-          if(brightness < 30) brightness = 30;
-          analogWrite(TFT_BL, brightness);  
-          
-          // send command to the queue
-          commandFromGUI qdata;
-          qdata.command = 2;
-          xQueueSend(onDemandQueue, &qdata, 0);
-          
-          // read temperature
-          float temp = qmi.getTemperature_C();
-          // set the temperature
-          char tempStr[10];
-          sprintf(tempStr, "%d°C", (int)temp);
-          lv_label_set_text(ui_tempLbl, tempStr);
-          
-        }
-      }
-    }
-    
+    // take ui mutex
+    xSemaphoreTake(xMutex, portMAX_DELAY);
     lv_timer_handler(); /* let the GUI do its work */
-    vTaskDelay(pdMS_TO_TICKS(5));
+
+    // check if on demand wifi is set
+    if(setOndemardWifi){
+      // stop the control task
+      vTaskDelete(controlTaskHandle);
+      setOndemardWifi = false;
+      // delete the control task
+
+      // set the arc value to 100
+      lv_arc_set_value(ui_wifiTimerArc, 100);
+      lv_obj_set_style_arc_color(ui_wifiTimerArc, lv_color_hex(0xFFFFFF) , LV_PART_INDICATOR | LV_STATE_DEFAULT);
+
+      lv_label_set_text(ui_Label4,"Connect to \n\nCryptoWatch v1.0 WiFi ");
+      lv_obj_set_style_text_color(ui_Label4, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+
+      // unhide the back button
+      lv_obj_remove_flag(ui_backBtn2, LV_OBJ_FLAG_HIDDEN);
+
+      // change the screen to wifi screen
+      _ui_screen_change(&ui_WifiScn, LV_SCR_LOAD_ANIM_OVER_LEFT, 500, 0, &ui_WifiScn_screen_init);
+
+      // create the on demand wifi task
+      xTaskCreatePinnedToCore(onDemandWiFiTask, "onDemandWiFiTask", 10096, NULL, 5, &handleOnDemand, 1);
+
+    }
+
+    // abord the on demand wifi task
+    if(cancelOnDemandWifi){
+      // stop the on demand wifi task, if running
+      if(handleOnDemand != NULL){
+        Serial.println("on demand wifi task deleted");
+        vTaskDelete(handleOnDemand);
+      }
+      cancelOnDemandWifi = false;
+
+      // change the screen to home screen
+      _ui_screen_change(&ui_MenuScn, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 0, &ui_MenuScn_screen_init);
+
+      
+      // create the control task with handle exceptions
+      xTaskCreatePinnedToCore(ControlTask, "ControlTask", 18096, NULL, 5, &controlTaskHandle, 1);
+    }
+
+    xSemaphoreGive(xMutex);
+    delay(5);
+
   }
 }
 
-void GUIUpdateTask(void *pvParameters){
-  guiCommandQueue qdata;
+void onDemandWiFiTask(void *pvParameters){
+  WiFiManager wm;
+  commandArray commands;
+
+  Serial.println("On Demand WiFi started");
+  bool res = wm.startConfigPortal(" CryptoWatch v1.0 ");
+
+  if(res){
+    Serial.println("WiFi connected");
+    // save the wifi credentials
+    ssid = wm.getWiFiSSID();
+    password = wm.getWiFiPass();
+
+    // turn off the WiFi
+    WiFi.mode(WIFI_OFF);
+
+    // stop the portal
+    wm.stopConfigPortal();
+
+    // hide the back button
+    guiCommand command;
+    command.command = 3;
+    command.wifiScreen.command = 2;
+    command.wifiScreen.hideCancelBtn = true;
+    commands.commands.push_back(command);
+
+    // set the arc value to 100
+    command.command = 3;
+    command.wifiScreen.command = 1;
+    command.wifiScreen.arcValue = 100;
+    command.wifiScreen.arcColor = lv_color_hex(0x00FFF5);
+    commands.commands.push_back(command);
+
+    // set the text to Connected
+    command.command = 3;
+    command.wifiScreen.command = 0;
+    command.wifiScreen.text = "New WiFi Added";
+    command.wifiScreen.textColor = lv_color_hex(0x00FFF5);
+    commands.commands.push_back(command);
+
+    // create the GUI control task
+    xTaskCreatePinnedToCore(GUIControlTask, "GUIControlTask", 4096, &commands, 5, NULL, 0);
+
+    delay(1000);
+
+    // change the screen to menu screen
+    command.command = 0;
+    command.screen = 2;
+    command.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
+    commands.commands.push_back(command);
+
+    // send command to restart the control task
+    command.command = 4;
+    commands.commands.push_back(command);
+
+    // create the GUI control task
+    xTaskCreatePinnedToCore(GUIControlTask, "GUIControlTask", 4096, &commands, 5, NULL, 0);
+
+  }else{
+    // WiFi turn off
+    WiFi.mode(WIFI_OFF);
+
+    Serial.println("WiFi not connected");
+
+    // stop the portal
+    wm.stopConfigPortal();
+
+    // hide the back button
+    guiCommand command;
+    command.command = 3;
+    command.wifiScreen.command = 2;
+    command.wifiScreen.hideCancelBtn = true;
+    commands.commands.push_back(command);
+
+    // set the arc value to 100
+    command.command = 3;
+    command.wifiScreen.command = 1;
+    command.wifiScreen.arcValue = 100;
+    command.wifiScreen.arcColor = lv_color_hex(0xFF0000);
+    commands.commands.push_back(command);
+
+    // set the text to Connected
+    command.command = 3;
+    command.wifiScreen.command = 0;
+    command.wifiScreen.text = "WiFi Not Connected\n\nPlease try again";
+    command.wifiScreen.textColor = lv_color_hex(0xFF0000);
+    commands.commands.push_back(command);
+
+    // create the GUI control task
+    xTaskCreatePinnedToCore(GUIControlTask, "GUIControlTask", 4096, &commands, 5, NULL, 0);
+
+    delay(1000);
+
+    // change the screen to menu screen
+    command.command = 0;
+    command.screen = 2;
+    command.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
+    commands.commands.push_back(command);
+
+    // create the GUI control task
+    xTaskCreatePinnedToCore(GUIControlTask, "GUIControlTask", 4096, &commands, 5, NULL, 0);
+  }
+
+  // restart the control task
+  xTaskCreatePinnedToCore(ControlTask, "ControlTask", 18096, NULL, 5, &controlTaskHandle, 1);
+
+  // delete the on demand wifi task
+  vTaskDelete(NULL);
+}
+
+void GUIControlTask(void *pvParameters){
+  // get the array of GUICommands from parameters
+  commandArray* commands = (commandArray*)pvParameters;
+
+  // take ui mutex
+  xSemaphoreTake(xMutex, portMAX_DELAY);
+
+  // run the GUI commands one by one
+  while(commands->commands.size() > 0){
+    guiCommand command = commands->commands[0];
+    commands->commands.erase(commands->commands.begin());
+
+     // update the time, ampmLbl and dateLbl on the screen
+     switch(command.command){
+      case 0:
+        switch(command.screen){
+          case 1:
+            _ui_screen_change(&ui_HomeScn, command.moveDir, 500, 0, &ui_HomeScn_screen_init);
+            break;
+          case 2:
+            _ui_screen_change(&ui_MenuScn, command.moveDir, 500, 0, &ui_MenuScn_screen_init);
+            break;
+          case 3:
+            _ui_screen_change(&ui_WifiScn, command.moveDir, 500, 0, &ui_WifiScn_screen_init);
+            break;
+        }
+        break;
+      case 1:
+      {
+        switch(command.homeScreen.command){
+          case 0:
+            char time[10];
+            sprintf(time, "%02d:%02d", command.homeScreen.hour, command.homeScreen.minute);
+            lv_label_set_text(ui_timeLbl, time);
+            if(command.homeScreen.ampm){
+              lv_label_set_text(ui_ampmLbl, "PM");
+            }else{
+              lv_label_set_text(ui_ampmLbl, "AM");
+            }
+      
+            // date - month-date Weekday
+            char dateStr[15];
+            sprintf(dateStr, "%02d-%02d %s", command.homeScreen.month, command.homeScreen.day, (command.homeScreen.weekday == 0) ? "SUN" : (command.homeScreen.weekday == 1) ? "MON" : (command.homeScreen.weekday == 2) ? "TUE" : (command.homeScreen.weekday == 3) ? "WED" : (command.homeScreen.weekday == 4) ? "THU" : (command.homeScreen.weekday == 5) ? "FRI" : "SAT");
+            lv_label_set_text(ui_dateLbl, dateStr);
+
+            // set the step count
+            char stepCountStr[10];
+            sprintf(stepCountStr, "%d", command.homeScreen.stepCount);
+            lv_label_set_text(ui_stepCountLbl, stepCountStr);
+
+            // // set the temperature
+            // char tempStr[10];
+            // sprintf(tempStr, "%d°", command.homeScreen.temp);
+            // lv_label_set_text(ui_tempLbl, tempStr);
+
+            // set the battery level
+            lv_label_set_text(ui_Label6, command.homeScreen.batteryLvl.c_str());
+            break;
+          case 1:
+            // set the crypto rate
+            lv_label_set_text(ui_cryptoRateLbl, command.homeScreen.cryptoRate.c_str());
+
+            // set the percent change 24h
+            if(command.homeScreen.is_percent_change_24h_negative){
+              lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+              lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+              lv_image_set_src(ui_arrowImg, &ui_img_down_triangle_png);
+              lv_obj_set_y(ui_cryptoPercentageLbl, -10);
+              lv_obj_set_y(ui_arrowImg, 6);
+            }else{
+              lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
+              lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
+              lv_image_set_src(ui_arrowImg, &ui_img_up_triangle_png);
+              lv_obj_set_y(ui_cryptoPercentageLbl, 6);
+              lv_obj_set_y(ui_arrowImg, -10);
+            }
+            lv_label_set_text(ui_cryptoPercentageLbl, command.homeScreen.percent_change_24h.c_str());
+            break;
+        }
+        break;
+      }
+      case 3:
+      {
+        switch(command.wifiScreen.command){
+          case 0:
+            lv_label_set_text(ui_Label4, command.wifiScreen.text);
+            lv_obj_set_style_text_color(ui_Label4, command.wifiScreen.textColor, LV_PART_MAIN | LV_STATE_DEFAULT);
+            break;
+          case 1:
+            lv_arc_set_value(ui_wifiTimerArc, command.wifiScreen.arcValue);
+            lv_obj_set_style_arc_color(ui_wifiTimerArc, command.wifiScreen.arcColor , LV_PART_INDICATOR | LV_STATE_DEFAULT);
+            break;
+          case 2:
+            if(command.wifiScreen.hideCancelBtn){
+              lv_obj_add_flag(ui_backBtn2, LV_OBJ_FLAG_HIDDEN);
+            }else{
+              lv_obj_remove_flag(ui_backBtn2, LV_OBJ_FLAG_HIDDEN);
+            }
+            break;
+        }
+        break; 
+      }
+      case 4:
+      {
+        // delete the on demand wifi task
+        // vTaskDelete(handleOnDemand);
+        // create the control task
+        xTaskCreatePinnedToCore(ControlTask, "ControlTask", 18096, NULL, 5, &controlTaskHandle, 1);
+        break; 
+      }
+    }
+  
+  } 
+
+  // give ui mutex
+  xSemaphoreGive(xMutex);
+  vTaskDelete(NULL);
+}
+
+void ControlTask(void *pvParameters){
+  Serial.println("Control Task started");
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   WiFiManager wm;
   struct tm timeinfo;
-  commandFromGUI onDemandCommand;
-  WiFiClientSecure *client;
-  //create an HTTPClient instance
-  HTTPClient https;
-  bool restartDisplayTimer = false;
-  bool displayOn = true;
-  esp_timer_handle_t display_on_timer = nullptr;
-  // once the timer expires, the display will be turned off
-  const esp_timer_create_args_t display_on_timer_args = {
-    .callback = [](void *arg) { 
-      // change to home screen
-      guiCommandQueue qdata;
-      qdata.command = 0;
-      qdata.screen = 1;
-      qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_LEFT;
-      xQueueSend(commandQueue, &qdata, 0);
+  commandArray commands;
+  guiCommand command;
+  float previousCryptoRate = 0;
+  unsigned long  lastTimeCrypto = 0;
+  unsigned long  intervalCrypto = 1000;
+  unsigned long timeupdateInterval = 1000;
+  unsigned long lastTimeUpdate = 0;
+  unsigned long currentTime = 0;
 
-      // send turn off display command to the queue
-      qdata.command = 6;
-      xQueueSend(commandQueue, &qdata, 0);
-
-      // send command to the queue
-      commandFromGUI qdata1;
-      qdata1.command = 3;
-      xQueueSend(onDemandQueue, &qdata1, 0);
-    },
-    .name = "display_on_timer"
-  };
+  delay(1000);
 
   // check if the wifi is connected
-  if (WiFi.status() != WL_CONNECTED) {
-    
-    delay(500);
-    // hide the back button 
-    qdata.command = 3;
-    qdata.wifiScreen.command = 2;
-    qdata.wifiScreen.hideCancelBtn = true;
-    xQueueSend(commandQueue, &qdata, 0);
+  if (!isInitialSetup){
+    // hide the back button
+    command.command = 3;
+    command.wifiScreen.command = 2;
+    command.wifiScreen.hideCancelBtn = true;
+    commands.commands.push_back(command);
 
     // set the arc value to 100
-    qdata.command = 3;
-    qdata.wifiScreen.command = 1;
-    qdata.wifiScreen.arcValue = 100;
-    qdata.wifiScreen.arcColor = lv_color_hex(0xFFFFFF);
-    xQueueSend(commandQueue, &qdata, 0);
+    command.command = 3;
+    command.wifiScreen.command = 1;
+    command.wifiScreen.arcValue = 100;
+    command.wifiScreen.arcColor = lv_color_hex(0xFFFFFF);
+    commands.commands.push_back(command);
 
-    // change text of ui_Label4 as connected
-    qdata.command = 3;
-    qdata.wifiScreen.command = 0;
-    qdata.wifiScreen.text = "Connect to \n\nCryptoWatch v1.0 WiFi ";
-    qdata.wifiScreen.textColor = lv_color_hex(0xFFFFFF);
-    xQueueSend(commandQueue, &qdata, 0);
+    // set the text to connecting
+    command.command = 3;
+    command.wifiScreen.command = 0;
+    command.wifiScreen.text = "Connect to \n\nCryptoWatch v1.0 WiFi ";
+    command.wifiScreen.textColor = lv_color_hex(0xFFFFFF);
+    commands.commands.push_back(command);
 
-    // change to screen 3
-    qdata.command = 0;
-    qdata.screen = 3;
-    qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
-    xQueueSend(commandQueue, &qdata, 0);
+    // set the screen to wifi screen
+    command.command = 0;
+    command.screen = 3;
+    command.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
+    commands.commands.push_back(command);
+
+    // create the GUI control task
+    xTaskCreatePinnedToCore(GUIControlTask, "GUIControlTask", 4096, &commands, 5, NULL, 0);
+
+    // wm.resetSettings();
+
+    // connect to wifi
+    bool res = wm.autoConnect("CryptoWatch v1.0");
+
+    if(!res){
+      Serial.println("Failed to connect to WiFi and hit timeout");
+      wm.resetSettings();
+      ESP.restart();
+    }else{
+
+      // Assign the SSID and password to the global variables
+      ssid = wm.getWiFiSSID();
+      password = wm.getWiFiPass();
+      Serial.printf("Connected to %s password %s\n", ssid, password);
     
-    // wm.resetSettings(); 
 
-    bool res = wm.autoConnect(" CryptoWatch v1.0 ");
+      // set the arc color to green
+      command.command = 3;
+      command.wifiScreen.command = 1;
+      command.wifiScreen.arcValue = 100;
+      command.wifiScreen.arcColor = lv_color_hex(0x00FF55);
+      commands.commands.push_back(command);
 
-    if(res) {
-      // delete wm 
-      wm.stopConfigPortal();
-      wm.stopWebPortal();
-      Serial.println("connected...yeey :)");
+      // set the text to connected
+      command.command = 3;
+      command.wifiScreen.command = 0;
+      command.wifiScreen.text = "Configuring the\n\nCryptoWatch v1.0";
+      command.wifiScreen.textColor = lv_color_hex(0xFFFFFF);
+      commands.commands.push_back(command);
 
-      // set arc color to green
-      qdata.command = 3;
-      qdata.wifiScreen.command = 1;
-      qdata.wifiScreen.arcColor = lv_color_hex(0x00FF55);
-      xQueueSend(commandQueue, &qdata, 0);
-      // change text of ui_Label4 as connected
-      // qdata.command = 3;
-      // qdata.wifiScreen.command = 0;
-      // sprintf(qdata.wifiScreen.text, "Connected to WiFi\n%s", WiFi.SSID().c_str());
-      // qdata.wifiScreen.textColor = lv_color_hex(0x00FF55);
-      // xQueueSend(commandQueue, &qdata, 0);
-      // delay(1000);
-
-      // qdata.command = 3;
-      // qdata.wifiScreen.command = 0;
-      // sprintf(qdata.wifiScreen.text, "Connected to WiFi\n%s", WiFi.SSID().c_str());
-      // qdata.wifiScreen.textColor = lv_color_hex(0xFFFFFF);
-      // xQueueSend(commandQueue, &qdata, 0);
-      // delay(1000);
-
-
-      qdata.command = 3;
-      qdata.wifiScreen.command = 0;
-      qdata.wifiScreen.text = "Configuring the\nCryptoWatch v1.0";
-      qdata.wifiScreen.textColor = lv_color_hex(0xFFFFFF);
-      xQueueSend(commandQueue, &qdata, 0);
-      delay(1000);
+      // create the GUI control task
+      xTaskCreatePinnedToCore(GUIControlTask, "GUIControlTask", 4096, &commands, 5, NULL, 0);
 
       while(1){
         if(!getLocalTime(&timeinfo)){
           Serial.println("Failed to obtain time");
           // continue;
         }else{
-          // change text of ui_Label4
-          qdata.command = 3;
-          qdata.wifiScreen.command = 0;
-          qdata.wifiScreen.text = "Configured the\nCryptoWatch v1.0";
-          qdata.wifiScreen.textColor = lv_color_hex(0x00FF55);
-          xQueueSend(commandQueue, &qdata, 0);
+          // change text to configured
+          command.command = 3;
+          command.wifiScreen.command = 0;
+          command.wifiScreen.text = "Configured\n\nCryptoWatch v1.0";
+          command.wifiScreen.textColor = lv_color_hex(0x00FF55);
+          commands.commands.push_back(command);
+
+          // create the GUI control task
+          xTaskCreatePinnedToCore(GUIControlTask, "GUIControlTask", 4096, &commands, 5, NULL, 0);
           delay(1000);
 
           Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
@@ -794,162 +843,104 @@ void GUIUpdateTask(void *pvParameters){
           tv.tv_usec = 0;
           settimeofday(&tv, 0);
 
-          // set the http clients
-          client = new WiFiClientSecure;
+          // change the screen to home screen
+          command.command = 0;
+          command.screen = 1;
+          command.moveDir = LV_SCR_LOAD_ANIM_MOVE_LEFT;
+          commands.commands.push_back(command);
 
-          if(client){
-            // set secure client with certificate
-            client->setCACert(test_root_ca);
-          }
+          // create the GUI control task
+          xTaskCreatePinnedToCore(GUIControlTask, "GUIControlTask", 4096, &commands, 5, NULL, 0);
 
-          // start the display timer
-          // create a timer to turn off the display after 5 seconds
-          ESP_ERROR_CHECK(esp_timer_create(&display_on_timer_args, &display_on_timer));
-          ESP_ERROR_CHECK(esp_timer_start_once(display_on_timer, DISPLAY_ON_TIME));
+          // turn off the WiFi
+          WiFi.disconnect(true);
+          WiFi.mode(WIFI_OFF);
 
-          lastTimeUpdate = millis();
+          wm.stopConfigPortal();
+
+          isInitialSetup = true;
           break;
-        } 
+        }
         delay(1000);
-      }
-
-      // change the screen HomeScn
-      qdata.command = 0;
-      qdata.screen = 1;
-      qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_LEFT;
-      xQueueSend(commandQueue, &qdata, 0);
-
-      // update the arc color
-      qdata.command = 3;
-      qdata.wifiScreen.command = 1;
-      qdata.wifiScreen.arcColor = lv_color_hex(0xFFFFFF);
-      xQueueSend(commandQueue, &qdata, 0);
-
-      // change text of ui_Label4
-      qdata.command = 3;
-      qdata.wifiScreen.command = 0;
-      sprintf(qdata.wifiScreen.text, "Connect to \n\nCryptoWatch v1.0 WiFi ");
-      qdata.wifiScreen.textColor = lv_color_hex(0xFFFFFF);
-      xQueueSend(commandQueue, &qdata, 0);
-
-      // unhide the back button
-      qdata.command = 3;
-      qdata.wifiScreen.command = 2;
-      qdata.wifiScreen.hideCancelBtn = false;
-      xQueueSend(commandQueue, &qdata, 0);
-      // delay(100);
-      
-    } else {
-      Serial.println("not connected... :(");
-
-      // TODO: handle this error.
-      lv_label_set_text(ui_Label4, "Not Connected to WiFi\n Try again in 3");
-      delay(500);
-      lv_label_set_text(ui_Label4, "Not Connected to WiFi\n Try again in 2");
-      delay(500);
-      lv_label_set_text(ui_Label4, "Not Connected to WiFi\n Try again in 1");
-      delay(500);
-
-      // Restart the ESP
-      ESP.restart();
+        Serial.println("Initial Configuration is running");
     }
-    
+    }
+
+  Serial.println("Comes to until Loop");
   }
 
   while(1){
-    if(xQueueReceive(onDemandQueue, &onDemandCommand, 0) == pdTRUE){
-      switch(onDemandCommand.command){
-        case 0:
-          // set arc value to 0
-          qdata.command = 3;
-          qdata.wifiScreen.command = 1;
-          qdata.wifiScreen.arcValue = 100;
-          xQueueSend(commandQueue, &qdata, 0);
-
-          // change the screen to WifiScn
-          qdata.command = 0;
-          qdata.screen = 3;
-          qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
-          xQueueSend(commandQueue, &qdata, 0);
-
-          // stop the display timer
-          if(esp_timer_is_active(display_on_timer)){
-            ESP_ERROR_CHECK(esp_timer_stop(display_on_timer));
-          }
-
-          // create a task for on demand wifi
-          xTaskCreatePinnedToCore(OndemandWiFiTask, "OndemandWiFiTask", 10096, NULL, 3, &handleOnDemand, 0);
-          break;
-        
-        case 1:
-          // delete the task
-          vTaskDelete(handleOnDemand);
-
-          // change screen to MenuScn
-          qdata.command = 0;
-          qdata.screen = 2;
-          qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
-          xQueueSend(commandQueue, &qdata, 0);
-
-          // start the display timer
-          restartDisplayTimer = true;
-          break;
-        
-        case 2:
-          displayOn = true;
-          restartDisplayTimer = true;
-          break;
-        
-        case 3:
-          displayOn = false;
-        break;
-      }
-    }
-    
-    // update the time every 1 second
-    if((millis() - lastTimeUpdate > timeupdateInterval)&& displayOn){
-      lastTimeUpdate = millis();
+    // get current time
+    currentTime = millis();
+    // update the time every minute
+    if(currentTime - lastTimeUpdate > timeupdateInterval){
+      lastTimeUpdate = currentTime;
+      // change the time update interval to 1 minute
+      timeupdateInterval = 60000;
+      Serial.println("Updating Time");
       
       time_t now;
       time(&now);
       struct tm *tm = localtime(&now);
-
+      
       // get hour, minute and date, month and weekday, am/pm seperately
-      qdata.homeScreen.hour = tm->tm_hour;
-      qdata.homeScreen.minute = tm->tm_min;
-      qdata.homeScreen.day = tm->tm_mday;
-      qdata.homeScreen.month = tm->tm_mon + 1;
-      qdata.homeScreen.weekday = tm->tm_wday;
-      qdata.homeScreen.ampm = qdata.homeScreen.hour >= 12 ? 1 : 0;
-      qdata.homeScreen.hour = qdata.homeScreen.hour % 12;
-      if(qdata.homeScreen.hour == 0){
-        qdata.homeScreen.hour = 12;
+      command.command = 1;
+      command.homeScreen.command = 0;
+      command.homeScreen.hour = tm->tm_hour;
+      command.homeScreen.minute = tm->tm_min;
+      command.homeScreen.day = tm->tm_mday;
+      command.homeScreen.month = tm->tm_mon + 1;
+      command.homeScreen.weekday = tm->tm_wday;
+      command.homeScreen.ampm = tm->tm_hour > 12 ? 1 : 0;
+      command.homeScreen.hour = command.homeScreen.hour % 12;
+      if(command.homeScreen.hour == 0){
+        command.homeScreen.hour = 12;
       }
-      // read the step counter
-      qdata.homeScreen.stepCount = 100;
-      // // read the temperature
-      // qdata.homeScreen.temp = 30;
-      // read the battery level
+      command.homeScreen.stepCount = 100;
+      
+      // get battery level
       int Volts = analogReadMilliVolts(BAT_VOLTAGE_PIN);
       // battery level = (Volts * 3.0 / 1000.0) / Measurement_offset;
       // map the battery level to 0-100, which ranges from 3.0V to 4.2V
-      qdata.homeScreen.batteryLvl = String(map(Volts, 3000, 4200, 0, 100));
-
-#ifdef ENABLE_LOGGING
-      Serial.print("Battery Level: ");
-      Serial.println(qdata.homeScreen.batteryLvl);
-#endif   
-      qdata.command = 1;
-      qdata.homeScreen.command = 0;
-      xQueueSend(commandQueue, &qdata, 0);
+      int batteryLevel = map(Volts, 3000, 4200, 0, 100);
+      command.homeScreen.batteryLvl = String(batteryLevel); 
+      
+      commands.commands.push_back(command);
+      // create the GUI control task
+      xTaskCreatePinnedToCore(GUIControlTask, "GUIControlTask", 4096, &commands, 5, NULL, 0);
+      
+      // // update the time every minute
+      // lastTimeUpdate = millis();
     }
-
-    if((millis() - lastTimeCrypto > intervalCrypto) && displayOn){
-      lastTimeCrypto = millis();
+    
+    // update the crypto rate every 10 seconds
+    if(currentTime - lastTimeCrypto > intervalCrypto){
+      lastTimeCrypto = currentTime;
+      // change crypto rate every 10 seconds
+      intervalCrypto = 60000;
       Serial.println("Updating Crypto Rate");
+      
+      // turn on the WiFi
+      WiFi.mode(WIFI_STA);
+      WiFi.begin(ssid, password);
+      
+      // wait for WiFi to connect
+      while(WiFi.status() != WL_CONNECTED){
+        delay(500);
+        Serial.println("Connecting to WiFi...");
+      }
+
       // read the crypto rate
+      WiFiClientSecure *client = new WiFiClientSecure;
+
+      if(client){
+        // set secure client with certificate
+        client->setCACert(test_root_ca);
+      }
       // read the crypto rate from API
       if(client) {
+        //create an HTTPClient instance
+        HTTPClient https;
         https.addHeader("X-CMC_PRO_API_KEY", apiKey);
         //Initializing an HTTPS communication using the secure client
         if (https.begin(*client, server)) {  // HTTPS
@@ -992,29 +983,30 @@ void GUIUpdateTask(void *pvParameters){
               */
 
               // parse the JSON response
-              DynamicJsonDocument doc(1024);
+              DynamicJsonDocument doc(2048);
               DeserializationError error = deserializeJson(doc, payload);
 
               if (error) {
                 Serial.print(F("deserializeJson() failed: "));
                 Serial.println(error.c_str());
-                qdata.homeScreen.cryptoRate = "--:--";
+                command.homeScreen.cryptoRate = "--:--";
               } else {
                 // get the price of the crypto
                 float price = doc["data"]["2634"]["quote"]["USD"]["price"];
+                previousCryptoRate = price;
                 float percent_change_24h = doc["data"]["2634"]["quote"]["USD"]["percent_change_24h"];
 #ifdef ENABLE_LOGGING
                 Serial.printf("Crypto Rate: %f\n", price);
 #endif
-                qdata.homeScreen.cryptoRate = String(price, 5);
+                command.homeScreen.cryptoRate = String(price, 5);
                 // percent_change_24h = "5.5%" remove the negativiy mark of the percent_change_24h
 
                 if(percent_change_24h >= 0){
-                  qdata.homeScreen.is_percent_change_24h_negative = false;
-                  qdata.homeScreen.percent_change_24h = String(percent_change_24h, 1) + "%";
+                  command.homeScreen.is_percent_change_24h_negative = false;
+                  command.homeScreen.percent_change_24h = String(percent_change_24h, 1) + "%";
                 }else{
-                  qdata.homeScreen.percent_change_24h = String(abs(percent_change_24h), 1) + "%";
-                  qdata.homeScreen.is_percent_change_24h_negative = true;
+                  command.homeScreen.percent_change_24h = String(abs(percent_change_24h), 1) + "%";
+                  command.homeScreen.is_percent_change_24h_negative = true;
                 }
             
               }
@@ -1022,77 +1014,31 @@ void GUIUpdateTask(void *pvParameters){
           }
           else {
             Serial.printf("[HTTPS] GET... failed, error: %s\n", https.errorToString(httpCode).c_str());
-            qdata.homeScreen.cryptoRate = "--:--";
+            command.homeScreen.cryptoRate = previousCryptoRate;
           }
           https.end();
         }
       }
       else {
         Serial.printf("[HTTPS] Unable to connect\n");
-        qdata.homeScreen.cryptoRate = "--:--";
+        command.homeScreen.cryptoRate = "--:--";
       }
 
-      qdata.command = 1;
-      qdata.homeScreen.command = 1;
-      xQueueSend(commandQueue, &qdata, 0);
+      command.command = 1;
+      command.homeScreen.command = 1;
+      
+      commands.commands.push_back(command);
+
+      // create the GUI control task
+      xTaskCreatePinnedToCore(GUIControlTask, "GUIControlTask", 4096, &commands, 5, NULL, 0);
+
+      // turn off the WiFi
+      WiFi.disconnect(true);
+      WiFi.mode(WIFI_OFF);
+
     }
     
-    if(restartDisplayTimer){
-      restartDisplayTimer = false;
-      if(esp_timer_is_active(display_on_timer)){
-        ESP_ERROR_CHECK(esp_timer_stop(display_on_timer));
-      }
-      // start the timer
-      ESP_ERROR_CHECK(esp_timer_start_once(display_on_timer, DISPLAY_ON_TIME));
-
-      // send command to turn on the display
-      qdata.command = 5;
-      xQueueSend(commandQueue, &qdata, 0);
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(500));
+    delay(1000);
   }
-}
 
-void OndemandWiFiTask(void *pvParameters){
-  WiFiManager wm;
-  guiCommandQueue qdata;
-
-  Serial.println("On Demand WiFi started");
-  wm.setConfigPortalBlocking(false);
-  wm.startConfigPortal(" CryptoWatch v1.0 ");
-
-  startTime = millis();
-  // is auto timeout portal running
-  while(1){
-    wm.process(); // do processing
-
-    // check for timeout
-    if((millis()-startTime) > (timeout*1000)){
-      Serial.println("portaltimeout");
-      wm.stopConfigPortal();
-
-      // move to MenuScn
-      qdata.command = 0;
-      qdata.screen = 2;
-      qdata.moveDir = LV_SCR_LOAD_ANIM_MOVE_RIGHT;
-      xQueueSend(commandQueue, &qdata, 0);
-
-      // set arc value to 100
-      qdata.command = 3;
-      qdata.wifiScreen.command = 1;
-      qdata.wifiScreen.arcValue = 100;
-      xQueueSend(commandQueue, &qdata, 0);
-
-      // restart the display timer
-      // send command to the queue
-      commandFromGUI qdata2;
-      qdata2.command = 2;
-      xQueueSend(onDemandQueue, &qdata2, 0);
-
-      // delete the task
-      vTaskDelete(NULL);
-      
-    }
-  }
 }

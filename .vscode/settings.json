@@ -1,7 +1,8 @@
 {
     "files.associations": {
         "*.ejs": "html",
-        "chrono": "cpp"
+        "chrono": "cpp",
+        "vector": "cpp"
     },
     "idf.portWin": "COM3"
 }
