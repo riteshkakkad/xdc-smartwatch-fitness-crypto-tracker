@@ -10,6 +10,7 @@
 extern "C" {
 #endif
 
+void changeCoinCB(lv_event_t * e);
 void brightnessChangecallback(lv_event_t * e);
 void addNewWiFicallback(lv_event_t * e);
 void backToHomeCB(lv_event_t * e);

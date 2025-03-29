@@ -38,9 +38,9 @@ extern lv_obj_t * ui_cryptoRateLbl;
 extern lv_obj_t * ui_arrowImg;
 extern lv_obj_t * ui_cryptoPercentageLbl;
 extern lv_obj_t * ui_cryptoNameLbl;
-extern lv_obj_t * ui_stepCountArc;
-extern lv_obj_t * ui_stepCountLbl;
-extern lv_obj_t * ui_stepsLbl;
+// extern lv_obj_t * ui_stepCountArc;
+// extern lv_obj_t * ui_stepCountLbl;
+// extern lv_obj_t * ui_stepsLbl;
 extern lv_obj_t * ui_tempuratureArc;
 extern lv_obj_t * ui_tempLbl;
 extern lv_obj_t * ui_batteryArc;
@@ -49,6 +49,16 @@ extern lv_obj_t * ui_Image2;
 extern lv_obj_t * ui_Panel2;
 extern lv_obj_t * ui_Panel1;
 extern lv_obj_t * ui_Label6;
+void ui_event_Button1(lv_event_t * e);
+extern lv_obj_t * ui_Button1;
+extern lv_obj_t * ui_btnLbl;
+extern bool changeCoin;
+// extern const char *xdcCryptoRate;
+// extern const char *xdc_percent_change_24h;
+// extern bool xdc_is_percent_change_24h_negative;
+// extern const char *btcCryptoRate;
+// extern const char *btc_percent_change_24h;
+// extern bool btc_is_percent_change_24h_negative;
 // CUSTOM VARIABLES
 
 // SCREEN: ui_MenuScn

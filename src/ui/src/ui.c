@@ -21,9 +21,9 @@ lv_obj_t * ui_cryptoRateLbl;
 lv_obj_t * ui_arrowImg;
 lv_obj_t * ui_cryptoPercentageLbl;
 lv_obj_t * ui_cryptoNameLbl;
-lv_obj_t * ui_stepCountArc;
-lv_obj_t * ui_stepCountLbl;
-lv_obj_t * ui_stepsLbl;
+// lv_obj_t * ui_stepCountArc;
+// lv_obj_t * ui_stepCountLbl;
+// lv_obj_t * ui_stepsLbl;
 lv_obj_t * ui_tempuratureArc;
 lv_obj_t * ui_tempLbl;
 lv_obj_t * ui_batteryArc;
@@ -32,6 +32,16 @@ lv_obj_t * ui_Image2;
 lv_obj_t * ui_Panel2;
 lv_obj_t * ui_Panel1;
 lv_obj_t * ui_Label6;
+void ui_event_Button1(lv_event_t * e);
+lv_obj_t * ui_Button1;
+lv_obj_t * ui_btnLbl;
+bool changeCoin = false;
+// const char *xdcCryptoRate = "--:--";
+// const char *xdc_percent_change_24h = "00.0%";
+// bool xdc_is_percent_change_24h_negative = false;
+// const char *btcCryptoRate = "--:--";
+// const char *btc_percent_change_24h = "00.0%";
+// bool btc_is_percent_change_24h_negative = false;
 // CUSTOM VARIABLES
 
 // SCREEN: ui_MenuScn
@@ -131,6 +141,15 @@ void ui_event_Roller1(lv_event_t * e)
 
     if(event_code == LV_EVENT_VALUE_CHANGED) {
         displayOnTimeChanged(e);
+    }
+}
+
+void ui_event_Button1(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+
+    if(event_code == LV_EVENT_CLICKED) {
+        changeCoinCB(e);
     }
 }
 

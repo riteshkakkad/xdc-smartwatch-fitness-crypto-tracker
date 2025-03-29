@@ -47,7 +47,7 @@ using namespace std;
 uint64_t DISPLAY_ON_TIME = 10 * 1000000;
 
 // crypto API parameters
-const char*  server = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest?id=2634";
+const char*  server = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest?id=2634,1";
 const char*  apiKey = "125646da-9cb9-431c-a815-e3d9e0c6f831";
 const char* test_root_ca= \
 "-----BEGIN CERTIFICATE-----\n" \
@@ -70,6 +70,7 @@ const char* test_root_ca= \
 "5MsI+yMRQ+hDKXJioaldXgjUkK642M4UwtBV8ob2xJNDd2ZhwLnoQdeXeGADbkpy\n" \
 "rqXRfboQnoZsG4q5WTP468SQvvG5\n" \
 "-----END CERTIFICATE-----\n";
+bool displayCionPriceFirstTime = true;
 
 static const uint16_t screenWidth  = 240;
 static const uint16_t screenHeight = 240;
@@ -116,9 +117,12 @@ struct homeScreenCommand{
   uint8_t ampm;
   int stepCount;
   String batteryLvl;
-  String cryptoRate;
-  String percent_change_24h;
-  bool is_percent_change_24h_negative;
+  String xdcCryptoRate;
+  String xdc_percent_change_24h;
+  bool xdc_is_percent_change_24h_negative;
+  String btcCryptoRate;
+  String btc_percent_change_24h;
+  bool btc_is_percent_change_24h_negative;
 };
 
 struct menuScreenCommand{
@@ -136,7 +140,7 @@ struct wifiScreenCommand{
 };
 
 struct guiCommand {
-  uint8_t command; // 0 - screen change, 1 - home screen, 2 - menu screen, 3 - wifi screen , 4 - set canDisplayTurnOff
+  uint8_t command; // 0 - screen change, 1 - home screen, 2 - menu screen, 3 - wifi screen , 4 - set changeCoin at first time
   homeScreenCommand homeScreen;
   menuScreenCommand menuScreen;
   wifiScreenCommand wifiScreen;
@@ -165,6 +169,13 @@ SemaphoreHandle_t xMutex;
 // task handlers
 TaskHandle_t handleOnDemand;
 TaskHandle_t controlTaskHandle;
+
+String xdcCryptoRate = "--:--";
+String xdc_percent_change_24h = "00.0%";
+bool xdc_is_percent_change_24h_negative = false;
+String btcCryptoRate = "--:--";
+String btc_percent_change_24h = "00.0%";
+bool btc_is_percent_change_24h_negative = false;
 
 void* allocate_psram(size_t size);
 void my_disp_flush (lv_display_t *disp, const lv_area_t *area, uint8_t *pixelmap);
@@ -282,6 +293,7 @@ void GUITask(void *pvParameters){
   unsigned long currentTime = 0;
   unsigned long previousTime = 0;
   unsigned long tempUpdateInterval = 3000;
+  bool xdc_or_btc = false; // 0 = btc, 1 = xdc
   // set backlight LED pin as output
   pinMode(TFT_BL, OUTPUT);
 
@@ -462,7 +474,7 @@ void GUITask(void *pvParameters){
   esp_timer_create(&display_timeout_timer_args, &dispay_timeout_timer);
   
   newDisplayOnTime = false;
-
+  // changeCoin = true;
   while(1){
     // take ui mutex
     xSemaphoreTake(xMutex, portMAX_DELAY);
@@ -475,6 +487,55 @@ void GUITask(void *pvParameters){
       char tempStr[10];
       sprintf(tempStr, "%d°C", (int)temp);
       lv_label_set_text(ui_tempLbl, tempStr);
+    }
+
+    // change coins
+    if(changeCoin){
+      changeCoin = false;
+      // change the coin to xdc or btc
+      if(xdc_or_btc){
+        xdc_or_btc = false;
+        // set the percent change 24h
+        if(xdc_is_percent_change_24h_negative){
+          lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+          lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+          lv_image_set_src(ui_arrowImg, &ui_img_down_triangle_png);
+          lv_obj_set_y(ui_cryptoPercentageLbl, -10);
+          lv_obj_set_y(ui_arrowImg, 6);
+        }else{
+          lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
+          lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
+          lv_image_set_src(ui_arrowImg, &ui_img_up_triangle_png);
+          lv_obj_set_y(ui_cryptoPercentageLbl, 6);
+          lv_obj_set_y(ui_arrowImg, -10);
+        }
+
+        lv_label_set_text(ui_cryptoPercentageLbl, xdc_percent_change_24h.c_str());
+        lv_label_set_text(ui_cryptoRateLbl, xdcCryptoRate.c_str());
+        lv_label_set_text(ui_cryptoNameLbl, "XDC");
+        lv_label_set_text(ui_btnLbl, "BTC");
+      }else{
+        xdc_or_btc = true;
+        // set the percent change 24h
+        if(btc_is_percent_change_24h_negative){
+          lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+          lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+          lv_image_set_src(ui_arrowImg, &ui_img_down_triangle_png);
+          lv_obj_set_y(ui_cryptoPercentageLbl, -10);
+          lv_obj_set_y(ui_arrowImg, 6);
+        }else{
+          lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
+          lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
+          lv_image_set_src(ui_arrowImg, &ui_img_up_triangle_png);
+          lv_obj_set_y(ui_cryptoPercentageLbl, 6);
+          lv_obj_set_y(ui_arrowImg, -10);
+        }
+        
+        lv_label_set_text(ui_cryptoPercentageLbl, btc_percent_change_24h.c_str());
+        lv_label_set_text(ui_cryptoRateLbl, btcCryptoRate.c_str());
+        lv_label_set_text(ui_cryptoNameLbl, "BTC");
+        lv_label_set_text(ui_btnLbl, "XDC");
+      }
     }
 
     lv_timer_handler(); /* let the GUI do its work */
@@ -752,7 +813,7 @@ void GUIControlTask(void *pvParameters){
             // set the step count
             char stepCountStr[10];
             sprintf(stepCountStr, "%d", command.homeScreen.stepCount);
-            lv_label_set_text(ui_stepCountLbl, stepCountStr);
+            // lv_label_set_text(ui_stepCountLbl, stepCountStr);
 
             // // set the temperature
             // char tempStr[10];
@@ -763,24 +824,33 @@ void GUIControlTask(void *pvParameters){
             lv_label_set_text(ui_Label6, command.homeScreen.batteryLvl.c_str());
             break;
           case 1:
-            // set the crypto rate
-            lv_label_set_text(ui_cryptoRateLbl, command.homeScreen.cryptoRate.c_str());
+            //// set the crypto rate
+            // lv_label_set_text(ui_cryptoRateLbl, command.homeScreen.cryptoRate.c_str());
 
-            // set the percent change 24h
-            if(command.homeScreen.is_percent_change_24h_negative){
-              lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
-              lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
-              lv_image_set_src(ui_arrowImg, &ui_img_down_triangle_png);
-              lv_obj_set_y(ui_cryptoPercentageLbl, -10);
-              lv_obj_set_y(ui_arrowImg, 6);
-            }else{
-              lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
-              lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
-              lv_image_set_src(ui_arrowImg, &ui_img_up_triangle_png);
-              lv_obj_set_y(ui_cryptoPercentageLbl, 6);
-              lv_obj_set_y(ui_arrowImg, -10);
-            }
-            lv_label_set_text(ui_cryptoPercentageLbl, command.homeScreen.percent_change_24h.c_str());
+            // // set the percent change 24h
+            // if(command.homeScreen.is_percent_change_24h_negative){
+            //   lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+            //   lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+            //   lv_image_set_src(ui_arrowImg, &ui_img_down_triangle_png);
+            //   lv_obj_set_y(ui_cryptoPercentageLbl, -10);
+            //   lv_obj_set_y(ui_arrowImg, 6);
+            // }else{
+            //   lv_obj_set_style_text_color(ui_cryptoPercentageLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
+            //   lv_obj_set_style_text_color(ui_cryptoRateLbl, lv_color_hex(0x00FF55), LV_PART_MAIN | LV_STATE_DEFAULT);
+            //   lv_image_set_src(ui_arrowImg, &ui_img_up_triangle_png);
+            //   lv_obj_set_y(ui_cryptoPercentageLbl, 6);
+            //   lv_obj_set_y(ui_arrowImg, -10);
+            // }
+            // lv_label_set_text(ui_cryptoPercentageLbl, command.homeScreen.percent_change_24h.c_str());
+            xdcCryptoRate = command.homeScreen.xdcCryptoRate;
+            xdc_percent_change_24h = command.homeScreen.xdc_percent_change_24h;
+            xdc_is_percent_change_24h_negative = command.homeScreen.xdc_is_percent_change_24h_negative;
+            btcCryptoRate = command.homeScreen.btcCryptoRate;
+            btc_percent_change_24h = command.homeScreen.btc_percent_change_24h;
+            btc_is_percent_change_24h_negative = command.homeScreen.btc_is_percent_change_24h_negative;
+
+            // print xdc, btc rates
+            Serial.printf("XDC: %s, BTC: %s\n", xdcCryptoRate.c_str(), btcCryptoRate.c_str());
             break;
         }
         break;
@@ -811,7 +881,12 @@ void GUIControlTask(void *pvParameters){
         }
         break; 
       }
-      
+      case 4:
+      {
+        // set the canDisplayTurnOff to true
+        changeCoin = true;
+        break;
+      }
     }
   
   } 
@@ -828,9 +903,10 @@ void ControlTask(void *pvParameters){
   struct tm timeinfo;
   commandArray commands;
   guiCommand command;
-  float previousCryptoRate = 0;
+  float previousCryptoRateXdc = 0;
+  float previousCryptoRateBtc = 0;
   unsigned long  lastTimeCrypto = 0;
-  unsigned long  intervalCrypto = 1000;
+  unsigned long  intervalCrypto = 1000; //
   unsigned long timeupdateInterval = 1000;
   unsigned long lastTimeUpdate = 0;
   unsigned long currentTime = 0;
@@ -966,7 +1042,7 @@ void ControlTask(void *pvParameters){
     if(currentTime - lastTimeUpdate > timeupdateInterval){
       lastTimeUpdate = currentTime;
       // change the time update interval to 1 minute
-      timeupdateInterval = 60000;
+      timeupdateInterval = 30*1000;
       Serial.println("Updating Time");
       
       time_t now;
@@ -981,7 +1057,7 @@ void ControlTask(void *pvParameters){
       command.homeScreen.day = tm->tm_mday;
       command.homeScreen.month = tm->tm_mon + 1;
       command.homeScreen.weekday = tm->tm_wday;
-      command.homeScreen.ampm = tm->tm_hour > 12 ? 0 : 1;
+      command.homeScreen.ampm = tm->tm_hour > 12 ? 1 : 0;
       command.homeScreen.hour = command.homeScreen.hour % 12;
       if(command.homeScreen.hour == 0){
         command.homeScreen.hour = 12;
@@ -989,11 +1065,20 @@ void ControlTask(void *pvParameters){
       command.homeScreen.stepCount = 100;
       
       // get battery level
-      int Volts = analogReadMilliVolts(BAT_VOLTAGE_PIN);
+      int volts = analogReadMilliVolts(BAT_VOLTAGE_PIN);
+      volts = (volts+20) * 3; // 3 is the voltage divider ratio
+      
       // battery level = (Volts * 3.0 / 1000.0) / Measurement_offset;
       // map the battery level to 0-100, which ranges from 3.0V to 4.2V
-      int batteryLevel = map(Volts, 3000, 4200, 0, 100);
+      int batteryLevel = map(volts, 3000, 4200, 0, 100);
+      if(batteryLevel < 0){
+        batteryLevel = 0;
+      }else if(batteryLevel > 100){
+        batteryLevel = 100;
+      }
+      // set the battery level to the command
       command.homeScreen.batteryLvl = String(batteryLevel); 
+      Serial.printf("Battery Voltage: %d mV  |  Percentage: %d%\n", volts, batteryLevel);
       
       commands.commands.push_back(command);
       // create the GUI control task
@@ -1005,9 +1090,9 @@ void ControlTask(void *pvParameters){
     
     // update the crypto rate every 10 seconds
     if(currentTime - lastTimeCrypto > intervalCrypto){
+      // change crypto rate every 5 minutes
+      intervalCrypto = 60*1000*5;
       lastTimeCrypto = currentTime;
-      // change crypto rate every 10 seconds
-      intervalCrypto = 60000;
       Serial.println("Updating Crypto Rate");
       
       // turn on the WiFi
@@ -1079,44 +1164,80 @@ void ControlTask(void *pvParameters){
               if (error) {
                 Serial.print(F("deserializeJson() failed: "));
                 Serial.println(error.c_str());
-                command.homeScreen.cryptoRate = "--:--";
+                command.homeScreen.xdcCryptoRate = "--:--";
+                command.homeScreen.btcCryptoRate = "--:--";
               } else {
                 // get the price of the crypto
-                float price = doc["data"]["2634"]["quote"]["USD"]["price"];
-                previousCryptoRate = price;
-                float percent_change_24h = doc["data"]["2634"]["quote"]["USD"]["percent_change_24h"];
+                float xdc_price = doc["data"]["2634"]["quote"]["USD"]["price"];
+                previousCryptoRateXdc = xdc_price;
+                float xdc_percent_change_24h = doc["data"]["2634"]["quote"]["USD"]["percent_change_24h"];
+                // get the price of the crypto
+                float btc_price = doc["data"]["1"]["quote"]["USD"]["price"];
+                previousCryptoRateBtc = btc_price;
+                float btc_percent_change_24h = doc["data"]["1"]["quote"]["USD"]["percent_change_24h"];
 #ifdef ENABLE_LOGGING
-                Serial.printf("Crypto Rate: %f\n", price);
+                // Serial.printf("Crypto Rate:= xdc = %f | btc = %f\n", xdc_price, btc_price);
 #endif
                 // price = price * 1000;
                 // if crypto rate is in 0-9 range, set decimal points to 6
-                if(price >= 0 && price < 10){
-                  command.homeScreen.cryptoRate = String(price, 6);
-                }else if(price >= 10 && price < 100){
-                  command.homeScreen.cryptoRate = String(price, 5);
-                }else if(price >= 100 && price < 1000){
-                  command.homeScreen.cryptoRate = String(price, 4);
-                }else if(price >= 1000 && price < 10000){
-                  command.homeScreen.cryptoRate = String(price, 3);
-                }else if(price >= 10000 && price < 100000){
-                  command.homeScreen.cryptoRate = String(price, 2);
-                }else if(price >= 100000 && price < 1000000){
-                  command.homeScreen.cryptoRate = String(price, 1);
-                }else if(price >= 1000000){
-                  command.homeScreen.cryptoRate = String(price, 0);
+                // for xdc
+                if(xdc_price >= 0 && xdc_price < 10){
+                  command.homeScreen.xdcCryptoRate = String(xdc_price, 6);
+                }else if(xdc_price >= 10 && xdc_price < 100){
+                  command.homeScreen.xdcCryptoRate = String(xdc_price, 5);
+                }else if(xdc_price >= 100 && xdc_price < 1000){
+                  command.homeScreen.xdcCryptoRate = String(xdc_price, 4);
+                }else if(xdc_price >= 1000 && xdc_price < 10000){
+                  command.homeScreen.xdcCryptoRate = String(xdc_price, 3);
+                }else if(xdc_price >= 10000 && xdc_price < 100000){
+                  command.homeScreen.xdcCryptoRate = String(xdc_price, 2);
+                }else if(xdc_price >= 100000 && xdc_price < 1000000){
+                  command.homeScreen.xdcCryptoRate = String(xdc_price, 1);
+                }else if(xdc_price >= 1000000){
+                  command.homeScreen.xdcCryptoRate = String(xdc_price, 0);
                 }
 
+                // for btc
+                if(btc_price >= 0 && btc_price < 10){
+                  command.homeScreen.btcCryptoRate = String(btc_price, 6);
+                }else if(btc_price >= 10 && btc_price < 100){
+                  command.homeScreen.btcCryptoRate = String(btc_price, 5);
+                }else if(btc_price >= 100 && btc_price < 1000){
+                  command.homeScreen.btcCryptoRate = String(btc_price, 4);
+                }else if(btc_price >= 1000 && btc_price < 10000){
+                  command.homeScreen.btcCryptoRate = String(btc_price, 3);
+                }else if(btc_price >= 10000 && btc_price < 100000){
+                  command.homeScreen.btcCryptoRate = String(btc_price, 2);
+                }else if(btc_price >= 100000 && btc_price < 1000000){
+                  command.homeScreen.btcCryptoRate = String(btc_price, 1);
+                }else if(btc_price >= 1000000){
+                  command.homeScreen.btcCryptoRate = String(btc_price, 0);
+                }
+
+
+
                 // add '$' to the crypto rate
-                command.homeScreen.cryptoRate = command.homeScreen.cryptoRate + "$" ;
+                command.homeScreen.xdcCryptoRate = "$" + command.homeScreen.xdcCryptoRate;
+                command.homeScreen.btcCryptoRate = "$" + command.homeScreen.btcCryptoRate;
 
                 // percent_change_24h = "5.5%" remove the negativiy mark of the percent_change_24h
 
-                if(percent_change_24h >= 0){
-                  command.homeScreen.is_percent_change_24h_negative = false;
-                  command.homeScreen.percent_change_24h = String(percent_change_24h, 1) + "%";
+                // for xdc
+                if(xdc_percent_change_24h >= 0){
+                  command.homeScreen.xdc_is_percent_change_24h_negative = false;
+                  command.homeScreen.xdc_percent_change_24h = String(xdc_percent_change_24h, 1) + "%";
                 }else{
-                  command.homeScreen.percent_change_24h = String(abs(percent_change_24h), 1) + "%";
-                  command.homeScreen.is_percent_change_24h_negative = true;
+                  command.homeScreen.xdc_percent_change_24h = String(abs(xdc_percent_change_24h), 1) + "%";
+                  command.homeScreen.xdc_is_percent_change_24h_negative = true;
+                }
+
+                // for btc
+                if(btc_percent_change_24h >= 0){
+                  command.homeScreen.btc_is_percent_change_24h_negative = false;
+                  command.homeScreen.btc_percent_change_24h = String(btc_percent_change_24h, 1) + "%";
+                }else{
+                  command.homeScreen.btc_percent_change_24h = String(abs(btc_percent_change_24h), 1) + "%";
+                  command.homeScreen.btc_is_percent_change_24h_negative = true;
                 }
             
               }
@@ -1124,20 +1245,27 @@ void ControlTask(void *pvParameters){
           }
           else {
             Serial.printf("[HTTPS] GET... failed, error: %s\n", https.errorToString(httpCode).c_str());
-            command.homeScreen.cryptoRate = previousCryptoRate;
+            command.homeScreen.xdcCryptoRate = previousCryptoRateXdc;
+            command.homeScreen.btcCryptoRate = previousCryptoRateBtc;
           }
           https.end();
         }
       }
       else {
         Serial.printf("[HTTPS] Unable to connect\n");
-        command.homeScreen.cryptoRate = "--:--";
+        command.homeScreen.xdcCryptoRate = "--:--";
+        command.homeScreen.btcCryptoRate = "--:--";
       }
 
       command.command = 1;
       command.homeScreen.command = 1;
-      
       commands.commands.push_back(command);
+
+      // if(displayCionPriceFirstTime){
+        command.command = 4;
+        commands.commands.push_back(command);
+        // displayCionPriceFirstTime = false;
+      // }
 
       if(firstTImeStartDisplayTimeout){
         firstTImeStartDisplayTimeout = false;

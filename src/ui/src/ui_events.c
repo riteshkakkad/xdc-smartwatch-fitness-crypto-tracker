@@ -44,3 +44,8 @@ void displayOnTimeChanged(lv_event_t * e)
 {
 	newDisplayOnTime = true;
 }
+
+void changeCoinCB(lv_event_t * e)
+{
+	changeCoin = true;
+}
