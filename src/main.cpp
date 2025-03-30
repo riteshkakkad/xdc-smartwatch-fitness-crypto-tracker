@@ -87,7 +87,7 @@ IMUdata gyr;
 
 // parameters for NTP Time
 const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 19800;
+const long  gmtOffset_sec = 60*60*4;
 const int   daylightOffset_sec = 1;
 
 // wifi credentials
@@ -903,8 +903,8 @@ void ControlTask(void *pvParameters){
   struct tm timeinfo;
   commandArray commands;
   guiCommand command;
-  float previousCryptoRateXdc = 0;
-  float previousCryptoRateBtc = 0;
+  String previousCryptoRateXdc;
+  String previousCryptoRateBtc;
   unsigned long  lastTimeCrypto = 0;
   unsigned long  intervalCrypto = 1000; //
   unsigned long timeupdateInterval = 1000;
@@ -1057,7 +1057,7 @@ void ControlTask(void *pvParameters){
       command.homeScreen.day = tm->tm_mday;
       command.homeScreen.month = tm->tm_mon + 1;
       command.homeScreen.weekday = tm->tm_wday;
-      command.homeScreen.ampm = tm->tm_hour > 12 ? 1 : 0;
+      command.homeScreen.ampm = tm->tm_hour >= 12 ? 1 : 0;
       command.homeScreen.hour = command.homeScreen.hour % 12;
       if(command.homeScreen.hour == 0){
         command.homeScreen.hour = 12;
@@ -1219,6 +1219,8 @@ void ControlTask(void *pvParameters){
                 // add '$' to the crypto rate
                 command.homeScreen.xdcCryptoRate = "$" + command.homeScreen.xdcCryptoRate;
                 command.homeScreen.btcCryptoRate = "$" + command.homeScreen.btcCryptoRate;
+                previousCryptoRateBtc = command.homeScreen.btcCryptoRate;
+                previousCryptoRateXdc = command.homeScreen.xdcCryptoRate;
 
                 // percent_change_24h = "5.5%" remove the negativiy mark of the percent_change_24h
 
