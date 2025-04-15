@@ -45,7 +45,7 @@ Built on the **ESP32-S3 Development Board**, this project is designed for develo
 - ✅ Integrated top bezel with display
 - ✅ Compatible with 22mm nylon Garmin straps
 
-> STL files will be added soon.
+> STL files for 3D Printing. 
 
 ---
 
